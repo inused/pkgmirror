@@ -1,5 +1,5 @@
 #!/bin/sh
-# 交叉编译 pymirror 全平台产物到 dist/，并附带示例配置文件。
+# 交叉编译 pkgmirror 全平台产物到 dist/，并附带示例配置文件。
 # 用法: scripts/build.sh（需 Go 1.20.7）
 set -e
 cd "$(dirname "$0")/.."
@@ -14,8 +14,8 @@ for target in windows/amd64 linux/amd64 linux/arm64 darwin/arm64; do
         ext=".exe"
     fi
     # 纯 Go 项目，禁用 cgo 保证产物无动态链接依赖
-    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -o "dist/pymirror-$os-$arch$ext" .
-    echo "已构建 dist/pymirror-$os-$arch$ext"
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "dist/pkgmirror-$os-$arch$ext" .
+    echo "已构建 dist/pkgmirror-$os-$arch$ext"
 done
 
 # 附带示例配置（resources/ 存放项目附属资源，扩展新镜像时新增对应示例）

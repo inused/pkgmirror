@@ -11,7 +11,8 @@ import (
 
 // File 描述下载产出目录中的一个文件。
 // type 为 "pypi" 时 Name 必填（PEP 503 规范包名）；
-// type 为 "python" 时 Tag 必填（python-build-standalone 构建标签）。
+// type 为 "python" 时 Tag 必填（python-build-standalone 构建标签）；
+// type 为 "npm" 时 Name 必填（完整包名，scoped 时含 @scope/ 前缀）。
 // Path 仅用于上传方在本下载产出目录内定位文件，服务端按 type 与 name/tag/filename
 // 自行构造落盘路径，不信任 Path。
 type File struct {
@@ -53,14 +54,14 @@ func Load(dir string) (Manifest, error) {
 		return m, fmt.Errorf("清单为空")
 	}
 	for i, f := range m.Files {
-		if f.Type != "pypi" && f.Type != "python" {
+		if f.Type != "pypi" && f.Type != "python" && f.Type != "npm" {
 			return m, fmt.Errorf("第 %d 个文件 type 非法: %q", i+1, f.Type)
 		}
 		if f.Filename == "" || f.Path == "" || f.SHA256 == "" {
 			return m, fmt.Errorf("第 %d 个文件缺少 filename/path/sha256", i+1)
 		}
-		if f.Type == "pypi" && f.Name == "" {
-			return m, fmt.Errorf("第 %d 个文件（pypi）缺少 name", i+1)
+		if (f.Type == "pypi" || f.Type == "npm") && f.Name == "" {
+			return m, fmt.Errorf("第 %d 个文件（%s）缺少 name", i+1, f.Type)
 		}
 		if f.Type == "python" && f.Tag == "" {
 			return m, fmt.Errorf("第 %d 个文件（python）缺少 tag", i+1)

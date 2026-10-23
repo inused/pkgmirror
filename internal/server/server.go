@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,12 +21,14 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"pymirror/internal/pypi"
+	"pkgmirror/internal/npm"
+	"pkgmirror/internal/paths"
+	"pkgmirror/internal/pypi"
 )
 
 // Config 是服务端配置，对应 server.toml。
 type Config struct {
-	// Listen 是监听地址，默认 ":8080"。
+	// Listen 是监听地址，默认 ":19999"。
 	Listen string `toml:"listen"`
 	// Root 是数据根目录，pypi/ 与 python/ 的父目录（每个子目录是一种镜像
 	// 类型，扩展新镜像时平铺新增，如 node/），默认 "./data"。
@@ -34,18 +37,21 @@ type Config struct {
 	Users map[string]string `toml:"users"`
 }
 
-// LoadConfig 读取并解析配置文件。
+// LoadConfig 读取并解析配置文件，并把 Root 归一化为绝对路径。
 //
-// 文件不存在时不视为错误，返回内置默认值（由调用方决定是否警告）。
+// Root 的相对路径相对**配置文件所在目录**解析（配置在哪，数据跟在哪，
+// 便携目录整体拷贝即迁移）；无配置文件时相对二进制目录。文件不存在时
+// 不视为错误，返回内置默认值（由调用方决定是否警告）。
 //
-//	@param path string 配置文件路径。
-//	@return Config 解析出的配置；文件不存在时为默认值。
+//	@param path string 配置文件路径，空串视为无配置文件。
+//	@return Config 解析出的配置，Root 恒为绝对路径。
 //	@return error 文件存在但 TOML 解析失败，或 Root 解析后为空时的错误。
 func LoadConfig(path string) (Config, error) {
-	cfg := Config{Listen: ":8080", Root: "./data", Users: map[string]string{}}
+	cfg := Config{Listen: ":19999", Root: "./data", Users: map[string]string{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			cfg.Root = absRoot("./data", paths.ExeDir())
 			return cfg, nil
 		}
 		return cfg, err
@@ -56,7 +62,24 @@ func LoadConfig(path string) (Config, error) {
 	if strings.TrimSpace(cfg.Root) == "" {
 		return cfg, fmt.Errorf("配置 %s 的 root 不能为空", path)
 	}
+	cfg.Root = absRoot(cfg.Root, filepath.Dir(path))
 	return cfg, nil
+}
+
+// absRoot 把相对 root 解析为基于 base 的绝对路径；已是绝对路径时原样返回。
+//
+//	@param root string 配置中的 root 值。
+//	@param base string 相对路径的基准目录（配置文件或二进制所在目录）。
+//	@return string 绝对路径。
+func absRoot(root, base string) string {
+	if filepath.IsAbs(root) {
+		return root
+	}
+	abs, err := filepath.Abs(filepath.Join(base, root))
+	if err != nil {
+		return root
+	}
+	return abs
 }
 
 // nameRe 规范化后的包名白名单（PEP 503 规范名只会包含小写字母数字与 - _ .）。
@@ -92,6 +115,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/pypi/", s.handlePypiFiles)
 	mux.HandleFunc("/python", s.handlePythonBrowse)
 	mux.HandleFunc("/python/", s.handlePython)
+	mux.HandleFunc("/npm", s.handleNpm)
+	mux.HandleFunc("/npm/", s.handleNpm)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
@@ -103,12 +128,12 @@ func (s *Server) Handler() http.Handler {
 //
 //	@return error 监听或服务过程中的错误。
 func (s *Server) ListenAndServe() error {
-	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python")} {
+	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python"), filepath.Join(s.cfg.Root, "npm")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("创建数据目录 %s 失败: %w", d, err)
 		}
 	}
-	log.Printf("pymirror 服务端启动 监听=%s 数据目录=%s 认证=%s", s.cfg.Listen, s.cfg.Root, authDesc(s.cfg.Users))
+	log.Printf("pkgmirror 服务端启动 监听=%s 数据目录=%s 认证=%s", s.cfg.Listen, s.cfg.Root, authDesc(s.cfg.Users))
 	return http.ListenAndServe(s.cfg.Listen, s.Handler())
 }
 
@@ -128,10 +153,10 @@ func (s *Server) basicAuth(next http.Handler) http.Handler {
 			// 无论用户是否存在都执行一次比较，避免按响应时间探测用户名
 			expected, known := s.cfg.Users[user]
 			if !known {
-				expected = "pymirror-timing-equalizer"
+				expected = "pkgmirror-timing-equalizer"
 			}
 			if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(expected)) != 1 || !known {
-				w.Header().Set("WWW-Authenticate", `Basic realm="pymirror"`)
+				w.Header().Set("WWW-Authenticate", `Basic realm="pkgmirror"`)
 				http.Error(w, "未授权", http.StatusUnauthorized)
 				return
 			}
@@ -148,8 +173,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	pkgs, _ := s.listPackages()
 	tags, _ := s.listPythonTags()
+	npmPkgs, _ := s.listNpmPackages()
 	// Host 取请求头，页面用它生成可直接复制的接入地址
-	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "Host": r.Host})
+	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "NpmPackages": len(npmPkgs), "Host": r.Host})
 }
 
 // handleSimpleRoot 渲染 PEP 503 根索引（全部包名 anchor 列表）。
@@ -398,9 +424,202 @@ func (s *Server) handlePythonBrowse(w http.ResponseWriter, r *http.Request) {
 	render(w, pythonTpl, map[string]any{"Rows": rows, "Host": r.Host})
 }
 
+// handleNpm 提供 npm registry 协议：/npm/ 为浏览页，/npm/{name} 返回
+// packument（tarball 地址重写为本镜像），/npm/{name}/-/{file} 返回 tarball。
+//
+// 必须用 r.URL.EscapedPath() 而非 r.URL.Path：scoped 包名的 / 在请求中
+// 编码为 %2F，net/http 解码后 Path 中的 / 会与 tarball 路径的多段结构
+// 混淆；EscapedPath 保留 %2F，先按 "/-/" 段切出文件部分，再解码包名。
+// 两种请求形式（%2F 编码与裸 /）均兼容。
+func (s *Server) handleNpm(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/npm/"), "/")
+	if rest == "" {
+		s.handleNpmBrowse(w, r)
+		return
+	}
+	rawName, file, isFile := strings.Cut(rest, "/-/")
+	name, err := url.PathUnescape(rawName)
+	if err != nil || !npm.ValidName(name) {
+		http.NotFound(w, r)
+		return
+	}
+	if !isFile {
+		s.servePackument(w, r, name)
+		return
+	}
+	if !fileRe.MatchString(file) {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.cfg.Root, "npm", filepath.FromSlash(name), file)
+	if _, err := os.Stat(path); err != nil {
+		s.npmNotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+// servePackument 返回包的 packument，tarball 地址重写为本镜像地址。
+//
+//	@param w http.ResponseWriter 响应写入器。
+//	@param r *http.Request 请求（取 Host 拼镜像地址）。
+//	@param name string 完整包名，可含 scope。
+func (s *Server) servePackument(w http.ResponseWriter, r *http.Request, name string) {
+	path := filepath.Join(s.cfg.Root, "npm", filepath.FromSlash(name), "packument.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		s.npmNotFound(w, r)
+		return
+	}
+	// 镜像仅提供 HTTP（无 TLS），地址直接用 http + 请求 Host
+	out, err := npm.RewriteTarballs(body, "http://"+r.Host, name)
+	if err != nil {
+		// 非法 packument：按原文返回并告警，npm 端会因版本缺失自行报错
+		log.Printf("重写 %s 的 packument 失败，按原文返回: %v", name, err)
+		out = body
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(out)
+}
+
+// npmNotFound 返回 404 状态码 + HTML 提示页，引导外网补下载。
+func (s *Server) npmNotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	renderBody(w, npm404Tpl, map[string]any{"Path": r.URL.Path})
+}
+
+// npmPkgRow 是 npm 浏览页与首页统计的一行包数据。
+type npmPkgRow struct {
+	Name  string
+	Count int
+	Size  int64
+}
+
+// listNpmPackages 列出 npm/ 下全部包（含 scoped 包）及文件统计。
+//
+// 目录约定：普通包为 npm/{name}/；scope 目录 npm/@scope/{name}/ 表示
+// 包 @scope/name。非目录项与非法包名跳过。
+//
+//	@return []npmPkgRow 按包名排序的列表。
+//	@return error npm/ 目录读取失败时的错误。
+func (s *Server) listNpmPackages() ([]npmPkgRow, error) {
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "npm"))
+	if err != nil {
+		return nil, err
+	}
+	var rows []npmPkgRow
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "@") {
+			// scope 目录：其下每个子目录是一个包
+			subs, err := os.ReadDir(filepath.Join(s.cfg.Root, "npm", e.Name()))
+			if err != nil {
+				continue
+			}
+			for _, se := range subs {
+				name := e.Name() + "/" + se.Name()
+				if !se.IsDir() || !npm.ValidName(name) {
+					continue
+				}
+				rows = append(rows, s.npmPkgRow(name))
+			}
+			continue
+		}
+		if !npm.ValidName(e.Name()) {
+			continue
+		}
+		rows = append(rows, s.npmPkgRow(e.Name()))
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows, nil
+}
+
+// npmPkgRow 统计单个包目录的文件数与总大小（跳过 .sha256 缓存与 .part 临时文件）。
+//
+//	@param name string 完整包名（斜杠分隔，可为 scoped 包）。
+//	@return npmPkgRow 包名与统计值；目录不可读时计数为零。
+func (s *Server) npmPkgRow(name string) npmPkgRow {
+	row := npmPkgRow{Name: name}
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "npm", filepath.FromSlash(name)))
+	if err != nil {
+		return row
+	}
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") || strings.HasPrefix(e.Name(), ".part-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		row.Count++
+		row.Size += info.Size()
+	}
+	return row
+}
+
+// handleNpmBrowse 渲染 npm 包浏览列表页。
+func (s *Server) handleNpmBrowse(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.listNpmPackages()
+	if err != nil {
+		http.Error(w, "读取 npm 目录失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, npmBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host})
+}
+
+// handleNpmPkgPage 渲染单个 npm 包的详情页（文件列表与下载链接）。
+//
+//	@param w http.ResponseWriter 响应写入器。
+//	@param r *http.Request 请求。
+//	@param name string 完整包名，可含 scope；非法或未同步时 404。
+func (s *Server) handleNpmPkgPage(w http.ResponseWriter, r *http.Request, name string) {
+	if !npm.ValidName(name) {
+		http.NotFound(w, r)
+		return
+	}
+	dir := filepath.Join(s.cfg.Root, "npm", filepath.FromSlash(name))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		s.npmNotFound(w, r)
+		return
+	}
+	var files []distFile
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") || strings.HasPrefix(e.Name(), ".part-") {
+			continue
+		}
+		sum, err := s.fileSHA256(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, distFile{Name: e.Name(), SHA256: sum, Size: info.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	render(w, npmPkgTpl, map[string]any{"Name": name, "Files": files})
+}
+
 // handleBrowse 渲染人用的包浏览页。
+//
+// /browse/ 为 PyPI 包列表；/browse/npm/ 转发 npm 包列表；
+// /browse/npm/{name}/ 为 npm 包详情；其余 /browse/{name}/ 为 PyPI 包详情。
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/browse/"), "/")
+	if rest == "npm" {
+		s.handleNpmBrowse(w, r)
+		return
+	}
+	if name, ok := strings.CutPrefix(rest, "npm/"); ok && name != "" {
+		s.handleNpmPkgPage(w, r, name)
+		return
+	}
 	if rest == "" {
 		type row struct {
 			Name  string
@@ -510,8 +729,19 @@ func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dest = filepath.Join("python", tag, filename)
+	case "npm":
+		if name == "" {
+			// scoped 包的 tarball 文件名不含 scope 前缀，无法从文件名反推包名
+			http.Error(w, "npm 上传必须提供包名（scoped 包含 @scope/ 前缀）", http.StatusBadRequest)
+			return
+		}
+		if !npm.ValidName(name) {
+			http.Error(w, "npm 包名包含非法字符", http.StatusBadRequest)
+			return
+		}
+		dest = filepath.Join("npm", filepath.FromSlash(name), filename)
 	default:
-		http.Error(w, "type 必须是 pypi 或 python", http.StatusBadRequest)
+		http.Error(w, "type 必须是 pypi、python 或 npm", http.StatusBadRequest)
 		return
 	}
 

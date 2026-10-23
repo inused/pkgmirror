@@ -1,9 +1,13 @@
-# pymirror download 客户端配置示例
+# pkgmirror download 客户端配置示例
 # 拷贝为 client.toml 放在执行目录（自动探测），或用 --config 指定路径；文件不存在则忽略。
 
 # PyPI 索引地址
 # 优先级：--index-url 参数 > 本文件 > UV_INDEX_URL/PIP_INDEX_URL 环境变量 > pip.conf > 官方源
 index-url = "https://pypi.org/simple"
+
+# npm registry 地址（download npm 使用）
+# 优先级：--registry 参数 > 本文件 > NPM_CONFIG_REGISTRY 环境变量 > 官方源
+# registry = "https://registry.npmjs.org"
 
 # GitHub 反代前缀（uv 元数据与 CPython 安装包托管在 GitHub releases）
 # 优先级：--github-prefix 参数 > 本文件 > GITHUB_PREFIX 环境变量 > 直连

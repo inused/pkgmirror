@@ -8,7 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"pymirror/internal/pypi"
+	"pkgmirror/internal/npm"
+	"pkgmirror/internal/pypi"
 )
 
 // pipConfPaths 返回当前平台 pip 配置文件的候选路径（按优先顺序）。
@@ -88,5 +89,26 @@ func ResolveIndexURL(explicit, fromConfig string) string {
 		return readPipConfIndex()
 	default:
 		return pypi.DefaultIndexURL
+	}
+}
+
+// ResolveRegistry 按优先级解析 npm registry 地址。
+//
+// 优先级：命令行参数 > 客户端配置文件 > NPM_CONFIG_REGISTRY 环境变量
+// > 官方源。外网机已有的 npm 镜像配置（npm config 设置的环境变量）可直接复用。
+//
+//	@param explicit string 命令行 --registry 传入的值，空串表示未指定。
+//	@param fromConfig string 客户端配置文件的 registry，空串表示未配置。
+//	@return string 解析出的 registry 地址，恒非空。
+func ResolveRegistry(explicit, fromConfig string) string {
+	switch {
+	case explicit != "":
+		return explicit
+	case fromConfig != "":
+		return fromConfig
+	case os.Getenv("NPM_CONFIG_REGISTRY") != "":
+		return os.Getenv("NPM_CONFIG_REGISTRY")
+	default:
+		return npm.DefaultRegistry
 	}
 }

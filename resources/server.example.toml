@@ -1,10 +1,11 @@
-# pymirror 服务端配置示例
+# pkgmirror 服务端配置示例
 # 拷贝为 server.toml 后按需修改；未找到配置文件时按本文件的默认值启动。
 
 # 监听地址
-listen = ":8080"
+listen = ":19999"
 
-# 数据根目录：PyPI 包存放在 <root>/pypi/，Python 安装包存放在 <root>/python/
+# 数据根目录：PyPI 包存放在 <root>/pypi/，Python 安装包存放在 <root>/python/，
+# npm 包存放在 <root>/npm/
 root = "./data"
 
 # Basic auth 用户表（用户名 = "密码"）。

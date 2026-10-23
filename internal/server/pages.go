@@ -73,7 +73,7 @@ button[type=submit]:hover{background:#1a7f37}
 
 // navHead 是人用页面的容器开头与导航条，各页面以 </div></body></html> 收尾。
 const navHead = `<div class="container">
-<nav><b>pymirror</b><a href="/">首页</a><a href="/browse/">PyPI 包</a><a href="/python/">Python 安装包</a><a href="/upload">上传</a></nav>`
+<nav><b>pkgmirror</b><a href="/">首页</a><a href="/browse/">PyPI 包</a><a href="/python/">Python 安装包</a><a href="/npm/">npm 包</a><a href="/upload">上传</a></nav>`
 
 // copyScript 是配置块的复制按钮脚本；浏览器不支持时退化为提示手动复制。
 const copyScript = `<script>
@@ -89,15 +89,16 @@ function copyCmd(id,btn){
 
 // Host 字段来自请求的 Host 头，页面用它拼出可直接复制的接入地址，
 // 用户访问用的是什么地址，页面上显示的就是什么地址。
-var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>pymirror</title>` + pageCSS + `</head><body>
+var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>pkgmirror</title>` + pageCSS + `</head><body>
 <div class="container" style="margin-bottom:1.5rem">
-<h1>pymirror</h1>
-<p class="sub">PyPI / uv Python 离线镜像</p>
+<h1>pkgmirror</h1>
+<p class="sub">PyPI / uv Python / npm 离线镜像</p>
 </div>
 ` + navHead + `
 <div class="stats">
-<div class="stat"><b>{{.Packages}}</b><span>个包</span></div>
+<div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
 <div class="stat"><b>{{.Tags}}</b><span>个 Python 构建标签</span></div>
+<div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
 </div>
 <div class="cfg">
 <h2>uv 接入（环境变量，把 user:pass 换成本服务账号）</h2>
@@ -110,21 +111,29 @@ export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</pre>
 <pre id="c2">pip install --index-url http://user:pass@{{.Host}}/simple 包名</pre>
 <button class="copy" onclick="copyCmd('c2',this)">复制</button>
 </div>
+<div class="cfg">
+<h2>npm / pnpm 接入（写入用户或项目 .npmrc；pnpm 读取同一文件）</h2>
+<pre id="c3">registry=http://{{.Host}}/npm/
+//{{.Host}}/:_auth=BASE64(user:pass)</pre>
+<button class="copy" onclick="copyCmd('c3',this)">复制</button>
+<p class="hint">BASE64(user:pass) 生成方式：<code>echo -n user:pass | base64</code>；
+yarn berry 用 <code>.yarnrc.yml</code> 的 <code>npmRegistryServer</code> 与 <code>npmAuthIdent</code>，取值相同。</p>
+</div>
 </div>
 ` + copyScript + `
 </body></html>`))
 
-var browseTpl = template.Must(template.New("browse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>包列表 - pymirror</title>` + pageCSS + `</head><body>
+var browseTpl = template.Must(template.New("browse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>包列表 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>PyPI 包列表</h1>
 <div class="cfgbar">pip：<code>pip install --index-url http://user:pass@{{.Host}}/simple 包名</code><br/>
 uv：<code>export UV_INDEX_URL=http://user:pass@{{.Host}}/simple</code></div>
 {{if .Rows}}<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
 {{range .Rows}}<tr><td><a href="/browse/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
-</tbody></table>{{else}}<p class="hint">暂无包。请先执行 <code>pymirror download pypi</code> 下载并上传。</p>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无包。请先执行 <code>pkgmirror download pypi</code> 下载并上传。</p>{{end}}
 </div></body></html>`))
 
-var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - PyPI 包 - pymirror</title>` + pageCSS + `</head><body>
+var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - PyPI 包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>{{.Name}}</h1>
 <table><thead><tr><th>文件</th><th>大小</th><th>sha256</th></tr></thead><tbody>
@@ -132,33 +141,59 @@ var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Pars
 </tbody></table>
 </div></body></html>`))
 
-var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Python 安装包 - pymirror</title>` + pageCSS + `</head><body>
+var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Python 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Python 安装包</h1>
 <div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</code></div>
 {{if .Rows}}<table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
 {{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
-</tbody></table>{{else}}<p class="hint">暂无 Python 安装包。请先执行 <code>pymirror download python x.y</code> 下载并上传。</p>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无 Python 安装包。请先执行 <code>pkgmirror download python x.y</code> 下载并上传。</p>{{end}}
 </div></body></html>`))
 
-var python404Tpl = template.Must(template.New("python404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pymirror</title>` + pageCSS + `</head><body>
+var python404Tpl = template.Must(template.New("python404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>文件未同步</h1>
 <p>请求的安装包 <code>{{.Path}}</code> 不在本镜像中。</p>
-<p>请先执行 <code>pymirror download python &lt;版本&gt;</code> 下载对应文件，再用 <code>pymirror upload</code> 上传到本服务。</p>
+<p>请先执行 <code>pkgmirror download python &lt;版本&gt;</code> 下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
 </div></body></html>`))
 
-var uploadTpl = template.Must(template.New("upload").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>上传 - pymirror</title>` + pageCSS + `</head><body>
+var npmBrowseTpl = template.Must(template.New("npmBrowse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>npm 包列表 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>npm 包列表</h1>
+<div class="cfgbar">npm：<code>npm config set registry http://{{.Host}}/npm/</code>（认证与 yarn 接入见首页）</div>
+{{if .Rows}}<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><a href="/browse/npm/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无 npm 包。请先执行 <code>pkgmirror download npm &lt;包名&gt;</code> 下载并上传。</p>{{end}}
+</div></body></html>`))
+
+var npmPkgTpl = template.Must(template.New("npmPkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - npm 包 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>{{.Name}}</h1>
+<p class="sub">packument 是 npm 安装用的元数据文件，tarball 是包内容；两者共同构成镜像数据，均可点击下载。</p>
+<table><thead><tr><th>文件</th><th>大小</th><th>sha256</th></tr></thead><tbody>
+{{range .Files}}<tr><td><a href="/npm/{{$.Name}}/-/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td><td><code>{{.SHA256}}</code></td></tr>{{end}}
+</tbody></table>
+<p class="hint">registry 协议入口（供 npm/pnpm/yarn）：<code>/npm/{{.Name}}</code></p>
+</div></body></html>`))
+
+var npm404Tpl = template.Must(template.New("npm404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>文件未同步</h1>
+<p>请求的 npm 资源 <code>{{.Path}}</code> 不在本镜像中。</p>
+<p>请先在外网执行 <code>pkgmirror download npm &lt;包名&gt;</code>（或补充 <code>-r package-lock.json</code>）下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
+</div></body></html>`))
+
+var uploadTpl = template.Must(template.New("upload").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>上传 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>上传文件</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <form method="post" action="/api/upload" enctype="multipart/form-data">
-<label for="f">文件（wheel / sdist / Python 安装包）</label>
+<label for="f">文件（wheel / sdist / Python 安装包 / npm tgz）</label>
 <input type="file" name="file" id="f" required>
 <label for="t">类型</label>
-<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option></select>
-<label for="n">包名（pypi）</label>
-<input type="text" name="name" id="n" placeholder="留空则从文件名自动解析">
+<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option><option value="npm">npm 包（tgz / packument.json）</option></select>
+<label for="n">包名（pypi 留空自动解析；npm 必填，scoped 含 @scope/ 前缀）</label>
+<input type="text" name="name" id="n" placeholder="pypi 可留空；npm 必填">
 <label for="g">构建标签（python）</label>
 <input type="text" name="tag" id="g" placeholder="8 位日期，如 20261021">
 <button type="submit">上传</button>

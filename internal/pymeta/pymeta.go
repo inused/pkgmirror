@@ -53,11 +53,11 @@ type Metadata map[string]Entry
 //
 //	@param r io.Reader 元数据文件内容。
 //	@return Metadata 解析结果。
-//	@return error JSON 语法错误时的错误；上游结构变更导致的字段缺失不报错，仅得零值。
+//	@return error JSON 解码失败时的错误；缺失字段取对应类型的零值。
 func ParseMetadata(r io.Reader) (Metadata, error) {
 	var m Metadata
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
-		return nil, fmt.Errorf("解析 uv 下载元数据失败（可能上游格式已变更，请升级 pymirror）: %w", err)
+		return nil, fmt.Errorf("解析 uv 下载元数据失败: %w", err)
 	}
 	return m, nil
 }

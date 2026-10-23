@@ -12,17 +12,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"pymirror/internal/redact"
 	"strconv"
 	"strings"
 	"time"
 
-	"pymirror/internal/manifest"
-	"pymirror/internal/pymeta"
-	"pymirror/internal/pypi"
+	"pkgmirror/internal/manifest"
+	"pkgmirror/internal/pymeta"
+	"pkgmirror/internal/pypi"
+	"pkgmirror/internal/redact"
 )
 
-// DownloadCommon 是 download python/pypi 两个子命令的公共输入。
+// DownloadCommon 是各下载类型共用的网络、来源和产出选项。
 type DownloadCommon struct {
 	// Platforms 是 --platform 的 os 过滤列表（linux/windows/darwin），空为全平台。
 	// 同时作用于 PyPI wheel 平台标签与 Python 安装包。
@@ -32,6 +32,8 @@ type DownloadCommon struct {
 	Archs []string
 	// IndexURL 是 PyPI 索引地址（已解析配置文件、环境变量与 pip.conf）。
 	IndexURL string
+	// Registry 是 npm registry 地址（已解析配置文件与环境变量，仅 download npm 使用）。
+	Registry string
 	// GitHubPrefix 是 GitHub 反代前缀，拼在完整 URL 之前，空为直连。
 	GitHubPrefix string
 	// Proxy 是 HTTP 代理地址（如 http://127.0.0.1:7890），空表示走
@@ -39,7 +41,7 @@ type DownloadCommon struct {
 	Proxy string
 	// OutDir 是下载产出目录路径。
 	OutDir string
-	// Version 是 pymirror 版本号，写入 manifest 的 generator 字段。
+	// Version 是 pkgmirror 版本号，写入 manifest 的 generator 字段。
 	Version string
 }
 
@@ -71,8 +73,8 @@ const httpTimeout = 30 * time.Minute
 // downloadRetries 是单个文件下载失败后的重试次数。
 const downloadRetries = 2
 
-// pymirrorUAVersion 是下载请求 User-Agent 中的版本号，由 main 通过变量注入。
-var PymirrorUAVersion = "dev"
+// pkgmirrorUAVersion 是下载请求 User-Agent 中的版本号，由 main 通过变量注入。
+var PkgMirrorUAVersion = "dev"
 
 // ParsePythonSpec 解析 "3.11" 或 "3.11.9" 形式的版本串。
 //
@@ -137,10 +139,10 @@ func specMinors(specs []pymeta.Spec) []int {
 
 // newManifest 构造本次下载的清单骨架。
 //
-//	@param version string pymirror 版本号。
+//	@param version string pkgmirror 版本号。
 //	@return manifest.Manifest 含元信息的空清单。
 func newManifest(version string) manifest.Manifest {
-	return manifest.Manifest{Version: 1, Generator: "pymirror " + version, Created: time.Now()}
+	return manifest.Manifest{Version: 1, Generator: "pkgmirror " + version, Created: time.Now()}
 }
 
 // saveManifest 合并保存清单并输出完成日志。
@@ -156,7 +158,7 @@ func saveManifest(outDir string, mf manifest.Manifest) error {
 	if err := manifest.Save(outDir, mf); err != nil {
 		return fmt.Errorf("写清单失败: %w", err)
 	}
-	log.Printf("完成：%s（%d 个文件）。上传命令: pymirror upload --server URL %s", outDir, len(mf.Files), outDir)
+	log.Printf("完成：%s（%d 个文件）。上传命令: pkgmirror upload --server URL %s", outDir, len(mf.Files), outDir)
 	return nil
 }
 
@@ -227,7 +229,7 @@ func RunDownloadPypi(opts DownloadPypiOptions) error {
 //	@return error 任何环节失败的原因。
 func RunDownloadPython(opts DownloadPythonOptions) error {
 	if len(opts.Pythons) == 0 {
-		return fmt.Errorf("请指定 Python 版本（如 pymirror download python 3.12 或 3.12.4 3.13.1）")
+		return fmt.Errorf("请指定 Python 版本（如 pkgmirror download python 3.12 或 3.12.4 3.13.1）")
 	}
 	ctx := context.Background()
 	client, err := newHTTPClient(opts.Proxy, httpTimeout)
@@ -323,33 +325,35 @@ func mergeManifest(dir string, cur manifest.Manifest) manifest.Manifest {
 	return merged
 }
 
-// resolveReqs 合并需求来源并调用外网机的 uv 生成 universal 锁定，再解析为依赖列表。
+// resolveReqs 合并需求来源并生成依赖列表。
 //
-// uv 不存在时报错并给出安装指引。
+// 输入全部为 name==version 时直接返回，传递依赖须包含在输入中；
+// 存在裸包名或版本范围时调用 uv 生成 universal 锁文件并解析。
 //
-//	@param ctx context.Context 上下文（用于超时控制）。
+//	@param ctx context.Context 上下文（用于超时控制，仅 uv 路径使用）。
 //	@param opts DownloadPypiOptions pypi 子命令选项。
-//	@return []pypi.Req 锁定后的 name==version 列表。
-//	@return error uv 调用或锁定文件解析失败的原因。
+//	@return []pypi.Req name==version 列表。
+//	@return error 输入读取、uv 调用或锁定文件解析失败的原因。
 func resolveReqs(ctx context.Context, opts DownloadPypiOptions) ([]pypi.Req, error) {
+	lines, err := collectReqLines(opts)
+	if err != nil {
+		return nil, err
+	}
+	if reqs := exactReqs(lines); reqs != nil {
+		if len(reqs) == 0 {
+			return nil, fmt.Errorf("输入中没有可下载的包（全部为空行或注释）")
+		}
+		log.Printf("按精确版本清单下载，不解析传递依赖")
+		return reqs, nil
+	}
 	if _, err := exec.LookPath("uv"); err != nil {
-		return nil, fmt.Errorf("未找到 uv，请先安装：https://docs.astral.sh/uv/getting-started/installation/")
+		return nil, fmt.Errorf("未找到 uv，请安装（如 pip install uv，或 https://docs.astral.sh/uv/getting-started/installation/）；或将全部包写成 包名==版本 精确形式以跳过解析")
 	}
 	var in strings.Builder
-	if opts.RequirementsFile != "" {
-		data, err := os.ReadFile(opts.RequirementsFile)
-		if err != nil {
-			return nil, fmt.Errorf("读取需求文件失败: %w", err)
-		}
-		in.Write(data)
-		if in.Len() > 0 && !strings.HasSuffix(in.String(), "\n") {
-			in.WriteString("\n")
-		}
+	for _, l := range lines {
+		fmt.Fprintf(&in, "%s\n", l)
 	}
-	for _, p := range opts.Packages {
-		fmt.Fprintf(&in, "%s\n", p)
-	}
-	inPath := filepath.Join(os.TempDir(), fmt.Sprintf("pymirror-%d.in", time.Now().UnixNano()))
+	inPath := filepath.Join(os.TempDir(), fmt.Sprintf("pkgmirror-%d.in", time.Now().UnixNano()))
 	lockPath := inPath + ".lock"
 	if err := os.WriteFile(inPath, []byte(in.String()), 0o644); err != nil {
 		return nil, err
@@ -370,6 +374,53 @@ func resolveReqs(ctx context.Context, opts DownloadPypiOptions) ([]pypi.Req, err
 	}
 	defer lockFile.Close()
 	return pypi.ParseLock(lockFile)
+}
+
+// collectReqLines 汇总需求来源：-r 需求文件内容（逐行）在前，
+// 命令行包名在后。
+//
+//	@param opts DownloadPypiOptions pypi 子命令选项。
+//	@return []string 原始输入行（未清洗）。
+//	@return error 需求文件读取失败的原因。
+func collectReqLines(opts DownloadPypiOptions) ([]string, error) {
+	var lines []string
+	if opts.RequirementsFile != "" {
+		data, err := os.ReadFile(opts.RequirementsFile)
+		if err != nil {
+			return nil, fmt.Errorf("读取需求文件失败: %w", err)
+		}
+		lines = append(lines, strings.Split(string(data), "\n")...)
+	}
+	return append(lines, opts.Packages...), nil
+}
+
+// exactReqs 判断输入行是否全部为精确形式（name==version）并解析。
+//
+// 空行、# 注释与 -- 选项行忽略；任一行是裸包名或版本范围（不含 ==，
+// 或 == 两侧有空值）时返回 nil，表示需要 uv 解析。行内 "; marker" 与
+// "# 注释" 截断规则与 pypi.ParseLock 一致。
+//
+//	@param lines []string 原始输入行。
+//	@return []pypi.Req 精确依赖列表；存在非精确行时为 nil。
+func exactReqs(lines []string) []pypi.Req {
+	var reqs []pypi.Req
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "--") {
+			continue
+		}
+		if i := strings.IndexAny(line, ";#"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		name, version, ok := strings.Cut(line, "==")
+		name = strings.TrimSpace(name)
+		version = strings.TrimSpace(version)
+		if !ok || name == "" || version == "" {
+			return nil
+		}
+		reqs = append(reqs, pypi.Req{Name: name, Version: version})
+	}
+	return reqs
 }
 
 // newHTTPClient 构造带可选代理的 HTTP 客户端。
@@ -475,7 +526,7 @@ func downloadTo(ctx context.Context, client *http.Client, url, dest, wantSHA str
 				return err
 			}
 			// 部分镜像（如清华源）对无 UA 的请求直接 403，始终声明身份
-			req.Header.Set("User-Agent", "pymirror/"+PymirrorUAVersion)
+			req.Header.Set("User-Agent", "pkgmirror/"+PkgMirrorUAVersion)
 			resp, err := client.Do(req)
 			if err != nil {
 				return err

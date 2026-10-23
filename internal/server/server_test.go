@@ -18,7 +18,7 @@ import (
 func newTestServer(t *testing.T, users map[string]string) (*Server, *httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	for _, d := range []string{"pypi", "python"} {
+	for _, d := range []string{"pypi", "python", "npm"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -199,6 +199,107 @@ func TestUploadPythonAndValidation(t *testing.T) {
 	}
 }
 
+func TestNpmUploadAndServe(t *testing.T) {
+	_, ts, root := newTestServer(t, nil)
+	// scoped 包的 packument 与 tarball：tarball 文件名不含 scope 前缀
+	packument := `{"dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{"dist":{"tarball":"https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz","integrity":"sha512-x"}}}}`
+	tarball := []byte("fake tgz content")
+	pSum := sha256.Sum256([]byte(packument))
+	tSum := sha256.Sum256(tarball)
+
+	resp := postUpload(t, ts.URL, "", "", "npm", "@scope/pkg", "", hex.EncodeToString(pSum[:]), "packument.json", []byte(packument))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("packument 上传失败: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = postUpload(t, ts.URL, "", "", "npm", "@scope/pkg", "", hex.EncodeToString(tSum[:]), "pkg-1.0.0.tgz", tarball)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tarball 上传失败: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if _, err := os.Stat(filepath.Join(root, "npm", "@scope", "pkg", "packument.json")); err != nil {
+		t.Fatalf("packument 未按 scoped 路径落盘: %v", err)
+	}
+
+	// packument 请求（%2F 编码形式）：tarball 地址重写为本镜像
+	host := strings.TrimPrefix(ts.URL, "http://")
+	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("packument 应 200, 得到 %d", resp.StatusCode)
+	}
+	want := "http://" + host + "/npm/@scope/pkg/-/pkg-1.0.0.tgz"
+	if !strings.Contains(string(body), want) {
+		t.Errorf("tarball 地址未重写为 %s: %s", want, body)
+	}
+	if strings.Contains(string(body), "registry.npmjs.org") {
+		t.Errorf("packument 仍含官方地址: %s", body)
+	}
+
+	// tarball 下载：编码与未编码两种路径形式
+	for _, p := range []string{"/npm/@scope%2Fpkg/-/pkg-1.0.0.tgz", "/npm/@scope/pkg/-/pkg-1.0.0.tgz"} {
+		resp, _ = http.Get(ts.URL + p)
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(got) != string(tarball) {
+			t.Errorf("tarball 下载失败 %s: %d", p, resp.StatusCode)
+		}
+	}
+
+	// 非 scoped 包 packument（无 /-/ 段）
+	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("非文件形式请求应返回 packument, 得到 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 未同步包 → 404 提示页
+	resp, _ = http.Get(ts.URL + "/npm/missing-pkg")
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(page), "文件未同步") {
+		t.Errorf("未同步包应 404+提示页, 得到 %d", resp.StatusCode)
+	}
+
+	// npm 上传必须提供包名（tarball 名不含 scope，无法反推）
+	resp = postUpload(t, ts.URL, "", "", "npm", "", "", "", "pkg-1.0.0.tgz", tarball)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("npm 无包名应 400, 得到 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	// 非法包名
+	resp = postUpload(t, ts.URL, "", "", "npm", "../evil", "", "", "pkg-1.0.0.tgz", tarball)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("非法 npm 包名应 400, 得到 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	// 首页与浏览页包含 npm 统计
+	resp, _ = http.Get(ts.URL + "/npm/")
+	page, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(page), "@scope/pkg") {
+		t.Errorf("npm 浏览页应列出包, 得到 %d", resp.StatusCode)
+	}
+	// 包详情页展示文件列表与下载链接
+	resp, _ = http.Get(ts.URL + "/browse/npm/@scope/pkg/")
+	page, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK ||
+		!strings.Contains(string(page), "pkg-1.0.0.tgz") ||
+		!strings.Contains(string(page), `href="/npm/@scope/pkg/-/packument.json"`) {
+		t.Errorf("npm 详情页应列出文件与下载链接, 得到 %d: %s", resp.StatusCode, page)
+	}
+	// packument.json 经 /-/ 路由可下载原始文件（与 packument 协议端点互不影响）
+	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg/-/packument.json")
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "registry.npmjs.org") {
+		t.Errorf("原始 packument 下载失败或内容不符: %d", resp.StatusCode)
+	}
+}
+
+// TestLoadConfig 覆盖配置解析、数据路径基准、默认值与非法 TOML。
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server.toml")
@@ -207,12 +308,19 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != ":9999" || cfg.Root != "./d" || cfg.Users["testuser"] != "p" {
+	// root 相对路径相对配置文件目录解析，归一化为绝对路径
+	if cfg.Listen != ":9999" || cfg.Root != filepath.Join(dir, "d") || cfg.Users["testuser"] != "p" {
 		t.Errorf("配置解析错误: %+v", cfg)
 	}
-	// 不存在 → 默认值
+	// 配置内的绝对 root 原样保留
+	os.WriteFile(path, []byte("root = \"/srv/mirror\"\n"), 0o644)
+	cfg, err = LoadConfig(path)
+	if err != nil || cfg.Root != "/srv/mirror" {
+		t.Errorf("绝对 root 应原样保留: %+v err=%v", cfg, err)
+	}
+	// 不存在 → 默认值（root 相对二进制目录，绝对路径）
 	cfg, err = LoadConfig(filepath.Join(dir, "none.toml"))
-	if err != nil || cfg.Listen != ":8080" || cfg.Root != "./data" {
+	if err != nil || cfg.Listen != ":19999" || !filepath.IsAbs(cfg.Root) || filepath.Base(cfg.Root) != "data" {
 		t.Errorf("缺失配置应返回默认值: %+v err=%v", cfg, err)
 	}
 	// 非法 TOML → 报错

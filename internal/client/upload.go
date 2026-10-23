@@ -11,11 +11,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"pymirror/internal/redact"
 	"strings"
 	"time"
 
-	"pymirror/internal/manifest"
+	"pkgmirror/internal/manifest"
+	"pkgmirror/internal/redact"
 )
 
 // UploadOptions 是 upload 子命令的全部输入。

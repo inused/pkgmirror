@@ -13,6 +13,8 @@ import (
 type ClientConfig struct {
 	// IndexURL 是 PyPI 索引地址，空表示未配置。
 	IndexURL string `toml:"index-url"`
+	// Registry 是 npm registry 地址（download npm 使用），空表示未配置。
+	Registry string `toml:"registry"`
 	// GitHubPrefix 是 GitHub 反代前缀，空表示未配置。
 	GitHubPrefix string `toml:"github-prefix"`
 	// Proxy 是 HTTP 代理地址（如 http://127.0.0.1:7890），空表示未配置。

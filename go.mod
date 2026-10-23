@@ -1,4 +1,4 @@
-module pymirror
+module pkgmirror
 
 go 1.20
 
