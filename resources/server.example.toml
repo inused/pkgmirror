@@ -1,0 +1,13 @@
+# pymirror 服务端配置示例
+# 拷贝为 server.toml 后按需修改；未找到配置文件时按本文件的默认值启动。
+
+# 监听地址
+listen = ":8080"
+
+# 数据根目录：PyPI 包存放在 <root>/pypi/，Python 安装包存放在 <root>/python/
+root = "./data"
+
+# Basic auth 用户表（用户名 = "密码"）。
+# 留空或不写 [users] 段表示不启用认证（任何人可访问和上传）。
+[users]
+admin = "CHANGE_ME_BEFORE_STARTING"

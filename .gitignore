@@ -1,0 +1,49 @@
+# 构建产物
+/dist/
+# 在项目根目录执行 go build 生成的程序
+/pkgmirror
+/*.exe
+# go test 产物（测试二进制与覆盖率输出）
+/*.test
+/coverage.out
+/coverage/
+
+# 服务端数据目录
+/data/
+
+# 默认下载产出目录
+/downloads/
+
+# 本机配置（从 server/client.example.toml 拷贝）
+/server.toml
+/client.toml
+*.local.toml
+
+# 本机环境变量与凭据，示例文件可提交。
+.env
+.env.*
+!.env.example
+
+# Go 工作区（本机调试用，不提交）
+go.work
+go.work.sum
+
+# 日志与临时文件
+*.log
+*.tmp
+
+# 编辑器/IDE
+.idea/
+.vscode/
+.history/
+*.swp
+
+# macOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# 个人编辑器、AI 工具缓存使用全局忽略规则或 .git/info/exclude。
