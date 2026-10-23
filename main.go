@@ -10,12 +10,13 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
 	"pkgmirror/internal/redact"
 	"strings"
+
+	flag "github.com/spf13/pflag"
 
 	"pkgmirror/internal/client"
 	"pkgmirror/internal/paths"
@@ -54,27 +55,26 @@ func main() {
 
 // usage 打印顶层帮助：子命令一览与整体使用流程。
 func usage() {
-	fmt.Print(`pkgmirror ` + Version + ` - uv/pip 离线镜像工具
+	fmt.Print(`pkgmirror ` + Version + ` - 离线包镜像工具（Python / npm）
 
 用法:
   pkgmirror <server|download|upload> [参数]
-  各层级均支持 -h 查看该层用法
+  任何一层都可以加 -h 查看这一层的用法
 
 子命令:
-  server    启动镜像服务端（pip/uv 安装源、npm registry、文件浏览与上传页面），长期运行
-  download  按需下载 PyPI 包、CPython 安装包与 npm 包（代理/索引/反代可配），
-            产出目录供 upload 上传
+  server    启动镜像服务端，长期运行。
+            内网机器从它这里装 Python，以及 pip、npm 的包
+  download  在外网机器上按需下载，产出目录拷回内网后用 upload 上传
   upload    把 download 产出的目录上传到服务端
 
 整体流程:
-  1. pkgmirror download python 3.12                    下载 Python 安装包
-     pkgmirror download pypi --python 3.12 six         下载 PyPI 包
-     pkgmirror download npm lodash                     下载 npm 包
+  1. 外网机下载（按需选类型执行）:
+     pkgmirror download python 3.12                  下载 Python 安装包
+     pkgmirror download pypi --python 3.12 six       下载 PyPI 包
+     pkgmirror download npm lodash                   下载 npm 包
   2. pkgmirror upload --server http://user:pass@host:port downloads
-  3. 使用方配置（一次即可，之后 uv pip install / uv python install 走镜像）:
-     export UV_INDEX_URL=http://user:pass@host:port/simple
-     export UV_PYTHON_INSTALL_MIRROR=http://user:pass@host:port/python
-     npm 接入见服务端首页（.npmrc 的 registry 与 _auth 配置）
+  3. 内网机器按服务端首页给出的配置接入（配一次即可），
+     之后 uv pip install、uv python install、npm install 都走镜像
 `)
 }
 
@@ -84,53 +84,66 @@ func usage() {
 func usageDownload() {
 	fmt.Print(`用法:
   pkgmirror download <python|pypi|npm> [参数] [选项]
-  对 python、pypi 或 npm 加 -h 查看各自完整的参数与选项语法
+  对每个类型加 -h 查看它的参数和选项
 
 下载类型:
-  python    下载 CPython 安装包（供 uv python install 使用）
-            版本为位置参数（如 3.12 或 3.12.4），支持按操作系统与架构
-            过滤，--all 可下载全部历史补丁版
-  pypi      下载 PyPI 包，自动解析全部依赖
-            包名为位置参数（如 six 或 six==1.17.0；裸包名自动取兼容
-            目标 Python 的最新版），--python 指定目标版本并过滤 wheel；
-            全部写成 包名==版本 时无需 uv 直接下载
-  npm       下载 npm 包，自动解析全部依赖（含 scoped 包）
-            包名为位置参数（如 lodash 或 lodash@^4），-r 可给
-            package.json 或现成的 package-lock.json（后者无需 npm）
+  python  下载 CPython 安装包，给内网 uv python install 用。
+          版本直接写在命令后面（如 3.12 或 3.12.4），可按操作系统和架构筛；
+          --all 把该系列的历史补丁版全部下载
+  pypi    下载 PyPI 包，输入含裸包名或版本范围时解析依赖。
+          包名直接写在命令后面（如 six 或 six==1.17.0）；
+          只写包名时自动选兼容目标 Python 的最新版；
+          全部写成 包名==版本 时直接下载清单中的版本，无需 uv
+  npm     下载 npm 包，自动带上全部依赖（@scope/ 开头的包也支持）。
+          包名直接写在命令后面（如 lodash 或 lodash@^4）；
+          -r 可直接给 package.json 或现成的 package-lock.json
 
-三类下载共有的能力（选项写在资源类型之后，语法见各自 -h）:
-  HTTP 代理（--proxy，或 HTTP_PROXY/HTTPS_PROXY 环境变量）、
-  PyPI 索引切换（--index-url，或 UV_INDEX_URL/PIP_INDEX_URL/pip.conf）、
-  npm registry 切换（--registry，npm 层使用）、
-  GitHub 反代（--github-prefix）、客户端配置文件（--config，默认 client.toml）、
-  输出目录（-o，默认固定 downloads/，重复执行自动增量合并清单）
+下载选项与适用类型（写在类型后面，完整语法见各自 -h）:
+  --proxy URL           HTTP 代理；不指定时用 HTTP_PROXY / HTTPS_PROXY 环境变量
+  -i, --index-url URL   PyPI 索引地址（pypi 层）；
+                        也可用 UV_INDEX_URL / PIP_INDEX_URL 环境变量或 pip.conf
+  -R, --registry URL    npm registry 地址（npm 层；或 NPM_CONFIG_REGISTRY）
+  --github-prefix P     GitHub 反代前缀（CPython 安装包与 uv 元数据托管在 GitHub）
+  -c, --config FILE     客户端配置文件，
+                        默认找当前目录和二进制目录下的 client.toml，
+                        模板见 resources/client.example.toml
+  -o DIR                下载产出目录，默认当前目录下的 downloads/；
+                        重复执行不重下已有文件，清单自动合并
 `)
 }
 
 // usageDownloadNpm 打印 download npm 层帮助。
 func usageDownloadNpm() {
 	fmt.Print(`用法:
-  pkgmirror download npm <包名[@版本range]>... [选项]
+  pkgmirror download npm <包名[@版本]>... [选项]
 
-下载 npm 包及全部传递依赖（含 scoped 包），内网 npm/pnpm/yarn
-配好 registry 后均可安装（接入方式见服务端首页）。
+下载 npm 包和它的全部依赖（包括依赖的依赖，@scope/ 开头的包也支持）。
+内网 npm / pnpm / yarn 配好 registry 后就能安装，接入配置见服务端首页。
 
 参数与选项:
-  包名             一个或多个，如 lodash、lodash@4、lodash@^4、@babel/core@^7；
-                   裸包名由 npm 取最新版
-  -r FILE          package.json（依赖全量收 dependencies + devDependencies +
-                   optionalDependencies）或现成的 package-lock.json（按内容
-                   识别，直接解析，无需本地 npm；与命令行包名互斥）
-  --registry URL   npm registry；默认依次取 client.toml、NPM_CONFIG_REGISTRY、
-                   官方源
-  --platform LIST  按操作系统过滤平台二进制包：linux,windows,darwin；默认全部
-  --arch LIST      按架构过滤平台二进制包：x86_64,aarch64；默认全部
-  --node LIST      目标 Node.js 版本（如 18 或 18.20.1），校验各包的
-                   engines.node；18 按 18.0.0 保守校验；只校验不选版
-                   （npm 无法按目标 node 解析，不兼容时报错人工调整）
+  包名                 一个或多个，写法有三种：
+                         lodash        取最新版
+                         lodash@4      取 4 这个大版本的最新版
+                         lodash@^4     按 ^4 规则选版本
+                       带 @scope/ 前缀的写法相同，如 @babel/core@^7
+  -r FILE              给 package.json 或现成的 package-lock.json：
+                       package.json 把 dependencies、devDependencies、
+                       optionalDependencies 三类依赖全部收进来；
+                       package-lock.json 直接按锁文件内容下载，本机不用装 npm。
+                       两者都与命令行的包名二选一
+  -R, --registry URL   npm registry 地址。默认依次取：client.toml、
+                       NPM_CONFIG_REGISTRY 环境变量、官方源
+  -p, --platform LIST  只下指定操作系统的二进制包：linux,windows,darwin；
+                       默认全部
+  --arch LIST          只下指定架构的二进制包：x86_64,aarch64；默认全部
+  --node LIST          目标 Node.js 版本（如 18 或 18.20.1），
+                       校验每个包要求的 engines.node 兼不兼容：
+                         18        按 18.0.0 校验（要求兼容最老的 18.x）
+                         18.20.1   按具体版本校验
+                       目标版本只用于校验，不兼容时需调整依赖或 Node.js 版本
 
-裸包名或 package.json 需要外网机装有 npm ≥ 7（负责依赖解析）；
-现成 package-lock.json 无任何外部依赖。
+只写包名或给 package.json 时，外网机需要装有 npm ≥ 7（用它解析依赖）；
+给 package-lock.json 时无需本机 npm。
 
 示例:
   pkgmirror download npm lodash
@@ -140,30 +153,33 @@ func usageDownloadNpm() {
 `)
 }
 
-// usageCommonOptions 是 download 两个类型共有的选项说明。
-const usageCommonOptions = `公共选项（python/pypi 通用）:
-  --index-url URL   PyPI 索引；默认依次取 client.toml、UV_INDEX_URL、
-                    PIP_INDEX_URL、pip.conf、官方源
-  --github-prefix P GitHub 反代前缀（Python 安装包与 uv 元数据托管在 GitHub）
-  --proxy URL       HTTP 代理；不指定时沿用 HTTP_PROXY/HTTPS_PROXY 环境变量
-  --config FILE     客户端配置文件，默认探测当前目录与二进制目录下的
-                    client.toml，模板见 resources/client.example.toml
-  -o DIR            下载产出目录；默认固定当前目录 downloads/，重复下载
-                    自动增量合并清单；目录是累积的，过滤条件只影响本次新增`
+// usageCommonOptions 是 download python 和 pypi 的公共选项说明。
+const usageCommonOptions = `公共选项（download python 和 pypi 共用）:
+  -i, --index-url URL     PyPI 索引地址。默认依次取：client.toml、UV_INDEX_URL、
+                          PIP_INDEX_URL、pip.conf、官方源
+  -g, --github-prefix P   GitHub 反代前缀（CPython 安装包和 uv 元数据放在 GitHub）
+  -x, --proxy URL         HTTP 代理。不指定时用 HTTP_PROXY / HTTPS_PROXY 环境变量
+  -c, --config FILE       客户端配置文件，
+                          默认找当前目录和二进制目录下的 client.toml，
+                          模板见 resources/client.example.toml
+  -o DIR                  下载产出目录，默认当前目录下的 downloads/；
+                          重复执行不重下已有文件，清单自动合并，
+                          过滤条件只影响本次新增`
 
 // usageDownloadPython 打印 download python 层帮助。
 func usageDownloadPython() {
 	fmt.Print(`用法:
   pkgmirror download python <版本>... [选项]
 
-下载 CPython 安装包（供 uv python install 使用）。
+下载 CPython 安装包（python-build-standalone 构建），给内网 uv python install 用。
 
 参数与选项:
-  版本             一个或多个，空格或逗号分隔；3.12 取该系列最新补丁版，
-                   3.12.4 精确到补丁版
-  --platform LIST  按操作系统过滤：linux,windows,darwin；默认全部
-  --arch LIST      按架构过滤：x86_64,aarch64（别名 amd64/arm64）；默认全部
-  --all            对未指定补丁号的版本，下载该系列全部历史补丁版
+  版本                 一个或多个，空格或逗号分隔。两种写法：
+                         3.12      取 3.12 的最新补丁版
+                         3.12.4    就下这个版本
+  -p, --platform LIST  按操作系统过滤：linux,windows,darwin；默认全部
+  --arch LIST          按架构过滤：x86_64,aarch64（amd64/arm64 是别名）；默认全部
+  --all                对只写到 3.12 这类版本，把该系列的历史补丁版全部下载
 
 ` + usageCommonOptions + `
 
@@ -178,16 +194,18 @@ func usageDownloadPypi() {
 	fmt.Print(`用法:
   pkgmirror download pypi <包名[==版本]>... [选项]
 
-下载 PyPI 包，自动解析全部依赖。
+下载 PyPI 包；输入含裸包名或版本范围时，调用 uv 解析传递依赖。
 
 参数与选项:
-  包名             一个或多个，也可用 -r 需求文件；带 ==版本 时锁定版本，
-                   裸包名自动取兼容目标 Python 版本的最新版
-  --python LIST    目标 Python 版本，必填（用于依赖解析与 wheel 过滤，只下载
-                   兼容该版本的 wheel；纯 Python 包与 sdist 始终保留）
-  -r FILE          需求文件（每行一个包名或 包名==版本）
-  --platform LIST  按操作系统过滤 wheel：linux,windows,darwin；默认全部
-  --arch LIST      按架构过滤 wheel：x86_64,aarch64；默认全部
+  包名                 一个或多个，也可以用 -r 从文件读。两种写法：
+                         six          自动选兼容目标 Python 的最新版
+                         six==1.17.0  就下这个版本
+                       全部写成 包名==版本 时直接下载，传递依赖须一并列出
+  -P, --python LIST    目标 Python 版本，必填。用来解析依赖和筛 wheel：
+                       只下兼容该版本的 wheel；纯 Python 包和 sdist 始终保留
+  -r FILE              需求文件，每行一个 包名 或 包名==版本
+  -p, --platform LIST  按操作系统筛 wheel：linux,windows,darwin；默认全部
+  --arch LIST          按架构筛 wheel：x86_64,aarch64；默认全部
 
 ` + usageCommonOptions + `
 
@@ -203,11 +221,11 @@ func usageServer() {
 	fmt.Print(`用法:
   pkgmirror server [--config FILE]
 
-启动镜像服务端，提供 PyPI simple 索引、Python 安装包分发、
-文件浏览与上传页面，长期运行。
+启动 Python、Node.js、Go 的安装包与包仓库镜像服务，
+提供文件浏览、搜索、上传和删除预览页面。
 
-  --config FILE  配置文件路径，默认探测当前目录与二进制目录下的
-                 server.toml，模板见 resources/server.example.toml
+  -c, --config FILE  配置文件路径。默认找当前目录和二进制目录下的 server.toml，
+                     模板见 resources/server.example.toml
 `)
 }
 
@@ -216,14 +234,14 @@ func usageUpload() {
 	fmt.Print(`用法:
   pkgmirror upload --server URL [选项] [目录]
 
-把 download 产出的目录（含 manifest.json）上传到服务端，
-已存在且内容相同的文件自动跳过，可重复执行。
-目录缺省为 download 的默认产出目录 downloads/；目录或清单不存在时报错。
+把 download 产出的目录（里面有 manifest.json）上传到服务端。
+内容相同的文件自动跳过，重复执行是安全的。
+目录不写时默认是 download 的产出目录 downloads/；目录或清单不存在时报错。
 
-  --server URL   服务端地址，如 http://user:pass@host:port（端口以服务端
-                 配置为准），凭据可直接嵌在地址里
-  --user NAME    Basic auth 用户名（URL 已嵌凭据时可省略）
-  --pass PASS    Basic auth 密码
+  -s, --server URL  服务端地址，如 http://user:pass@host:port，
+                    端口以服务端配置为准，账号密码可以直接写在地址里
+  --user NAME       Basic auth 用户名（地址里已带账号密码时可省略）
+  --pass PASS       Basic auth 密码
 `)
 }
 
@@ -234,7 +252,7 @@ func usageUpload() {
 func runServer(args []string) error {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	fs.Usage = usageServer
-	configPath := fs.String("config", "", "服务端配置文件路径，默认探测当前目录与二进制目录下的 server.toml")
+	configPath := fs.StringP("config", "c", "", "服务端配置文件路径，默认探测当前目录与二进制目录下的 server.toml")
 	fs.Parse(args)
 	if *configPath == "" {
 		*configPath = paths.FindConfig("server.toml")
@@ -293,67 +311,20 @@ type dlFlags struct {
 //	@return dlFlags 已注册公共选项的选项集。
 func newDownloadFlags(name string) dlFlags {
 	fs := flag.NewFlagSet("download "+name, flag.ExitOnError)
-	// 该层 -h 只展示本层用法；由入口再指定各资源类型的专属帮助
+	// 该层 -h 只展示本层用法；由入口再指定各资源类型的专属帮助；
+	// StringP 绑定单字母短参数（与长参数同一变量），单字母的 -o 也
+	// 须以 shorthand 注册才会被 pflag 解析
 	return dlFlags{
 		fs:           fs,
-		platforms:    fs.String("platform", "", "按操作系统过滤（linux/windows/darwin），逗号分隔，默认全部"),
+		platforms:    fs.StringP("platform", "p", "", "按操作系统过滤（linux/windows/darwin），逗号分隔，默认全部"),
 		archs:        fs.String("arch", "", "按架构过滤（x86_64/aarch64，别名 amd64/arm64），逗号分隔，默认全部"),
-		indexURL:     fs.String("index-url", "", "PyPI 索引地址"),
-		registry:     fs.String("registry", "", "npm registry 地址（download npm 使用）"),
-		githubPrefix: fs.String("github-prefix", "", "GitHub 反代前缀"),
-		proxy:        fs.String("proxy", "", "HTTP 代理地址，如 http://127.0.0.1:7890"),
-		configFile:   fs.String("config", paths.FindConfig("client.toml"), "客户端配置文件路径，不存在则跳过"),
-		outDir:       fs.String("o", "", "下载产出目录，默认固定 downloads/"),
+		indexURL:     fs.StringP("index-url", "i", "", "PyPI 索引地址"),
+		registry:     fs.StringP("registry", "R", "", "npm registry 地址（download npm 使用）"),
+		githubPrefix: fs.StringP("github-prefix", "g", "", "GitHub 反代前缀"),
+		proxy:        fs.StringP("proxy", "x", "", "HTTP 代理地址，如 http://127.0.0.1:7890"),
+		configFile:   fs.StringP("config", "c", paths.FindConfig("client.toml"), "客户端配置文件路径，不存在则跳过"),
+		outDir:       fs.StringP("o", "o", "", "下载产出目录，默认固定 downloads/"),
 	}
-}
-
-// dlStringFlags 是 download 子命令中需要带值的选项名集合。
-var dlStringFlags = map[string]bool{
-	"platform": true, "arch": true, "index-url": true, "registry": true,
-	"github-prefix": true, "proxy": true, "config": true, "o": true, "r": true,
-	"python": true, "node": true,
-}
-
-// dlBoolFlags 是 download 子命令中的布尔选项名集合（不带值）。
-var dlBoolFlags = map[string]bool{"all": true}
-
-// reorderArgs 把选项（连同其值）移动到位置参数之前，再交给 flag 包解析。
-//
-// Go 的 flag 包遇到首个位置参数即停止解析，用户习惯把选项写在位置参数
-// 之后（如 download python 3.12 --platform linux），重排后两种顺序都可用。
-// 值与选项名合并（--platform=linux）或分离（--platform linux）均可识别；
-// 未知选项原样保留在前段，由 flag 包报“未定义”错误；带值选项位于参数
-// 末尾无处取值时在此报错——若放任其进入重排结果，flag 包会把后面的
-// 位置参数误当它的值（或静默丢弃），错误信息会严重误导。
-//
-//	@param args []string 原始参数。
-//	@param stringFlags map[string]bool 需要带值的选项名集合。
-//	@param boolFlags map[string]bool 不带值的选项名集合。
-//	@return []string 重排后的参数（选项在前，位置参数在后）。
-//	@return error 带值选项缺少值时的错误。
-func reorderArgs(args []string, stringFlags, boolFlags map[string]bool) ([]string, error) {
-	var flags, pos []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if len(a) > 1 && a[0] == '-' {
-			name := strings.TrimLeft(a, "-")
-			hasValue := strings.Contains(name, "=")
-			if hasValue || boolFlags[name] || !stringFlags[name] {
-				// -x=v、布尔选项、未知选项：单参数自包含
-				flags = append(flags, a)
-				continue
-			}
-			// 分离写法的带值选项：连同下一个参数一起前移；末尾无值可配对时报错
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("选项 %s 缺少值", a)
-			}
-			flags = append(flags, a, args[i+1])
-			i++
-			continue
-		}
-		pos = append(pos, a)
-	}
-	return append(flags, pos...), nil
 }
 
 // resolveCommon 按三级来源合成公共配置。
@@ -384,14 +355,10 @@ func (f dlFlags) resolveCommon() (client.DownloadCommon, error) {
 //	@return error 选项解析或下载失败的原因。
 func runDownloadNpm(args []string) error {
 	f := newDownloadFlags("npm")
-	reqFile := f.fs.String("r", "", "package.json 或 package-lock.json 路径（lock 免 npm，与命令行包名互斥）")
+	reqFile := f.fs.StringP("r", "r", "", "package.json 或 package-lock.json 路径（lock 免 npm，与命令行包名互斥）")
 	nodes := f.fs.String("node", "", "目标 Node.js 版本，逗号分隔（如 18 或 18.20.1），校验包的 engines.node")
 	f.fs.Usage = usageDownloadNpm
-	reordered, err := reorderArgs(args, dlStringFlags, dlBoolFlags)
-	if err != nil {
-		return err
-	}
-	f.fs.Parse(reordered)
+	f.fs.Parse(args)
 	common, err := f.resolveCommon()
 	if err != nil {
 		return err
@@ -424,11 +391,7 @@ func runDownloadPython(args []string) error {
 	f := newDownloadFlags("python")
 	f.fs.Usage = usageDownloadPython
 	all := f.fs.Bool("all", false, "对未指定补丁号的版本下载全部历史补丁")
-	reordered, err := reorderArgs(args, dlStringFlags, dlBoolFlags)
-	if err != nil {
-		return err
-	}
-	f.fs.Parse(reordered)
+	f.fs.Parse(args)
 	common, err := f.resolveCommon()
 	if err != nil {
 		return err
@@ -458,14 +421,10 @@ func runDownloadPython(args []string) error {
 //	@return error 选项解析或下载失败的原因。
 func runDownloadPypi(args []string) error {
 	f := newDownloadFlags("pypi")
-	reqFile := f.fs.String("r", "", "需求文件路径（每行一个 包名==版本）")
+	reqFile := f.fs.StringP("r", "r", "", "需求文件路径（每行一个 包名==版本）")
 	f.fs.Usage = usageDownloadPypi
-	pythons := f.fs.String("python", "", "目标 Python 版本，逗号分隔，必填（依赖解析与 wheel 过滤）")
-	reordered, err := reorderArgs(args, dlStringFlags, dlBoolFlags)
-	if err != nil {
-		return err
-	}
-	f.fs.Parse(reordered)
+	pythons := f.fs.StringP("python", "P", "", "目标 Python 版本，逗号分隔，必填（依赖解析与 wheel 过滤）")
+	f.fs.Parse(args)
 	common, err := f.resolveCommon()
 	if err != nil {
 		return err
@@ -499,14 +458,10 @@ func runDownloadPypi(args []string) error {
 func runUpload(args []string) error {
 	fs := flag.NewFlagSet("upload", flag.ExitOnError)
 	fs.Usage = usageUpload
-	serverURL := fs.String("server", "", "服务端地址")
+	serverURL := fs.StringP("server", "s", "", "服务端地址")
 	user := fs.String("user", "", "Basic auth 用户名")
 	pass := fs.String("pass", "", "Basic auth 密码")
-	reordered, err := reorderArgs(args, map[string]bool{"server": true, "user": true, "pass": true}, nil)
-	if err != nil {
-		return err
-	}
-	fs.Parse(reordered)
+	fs.Parse(args)
 	if fs.NArg() > 1 {
 		return fmt.Errorf("只能指定一个目录参数；或加 -h 查看完整说明")
 	}
