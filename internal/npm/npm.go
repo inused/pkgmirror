@@ -281,9 +281,9 @@ func TarballInfo(body []byte, version string) (tarballURL, integrity, enginesNod
 //
 // 服务端返回 packument 前调用：npm 按包内 URL 下载 tarball，不重写则会
 // 绕过镜像直连官方源。文件名取原 URL 尾段（与官方命名一致），重写后的
-// URL 形如 {schemeHost}/npm/{name}/-/{file}，与官方 URL 结构相同（scope
-// 不编码，npm 请求时自行处理）。packument 各字段均为字符串或对象，
-// map 反序列化再序列化无损。
+// URL 形如 {schemeHost}/mirror/npm/{name}/-/{file}，与官方 URL 结构相同
+// （scope 不编码，npm 请求时自行处理）。packument 各字段均为字符串或
+// 对象，map 反序列化再序列化无损。
 //
 //	@param body []byte packument 原始 JSON。
 //	@param schemeHost string 镜像对外地址（如 http://host:8080），不含路径。
@@ -309,7 +309,7 @@ func RewriteTarballs(body []byte, schemeHost, name string) ([]byte, error) {
 			if tb == "" {
 				continue
 			}
-			dm["tarball"] = schemeHost + "/npm/" + name + "/-/" + fileNameOf(tb)
+			dm["tarball"] = schemeHost + "/mirror/npm/" + name + "/-/" + fileNameOf(tb)
 		}
 	}
 	return json.Marshal(doc)

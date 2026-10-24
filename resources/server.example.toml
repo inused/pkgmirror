@@ -1,14 +1,15 @@
 # pkgmirror 服务端配置示例
-# 拷贝为 server.toml 后按需修改；未找到配置文件时按本文件的默认值启动。
+# 拷贝为 server.toml 后按需修改；未找到配置文件时使用默认监听地址和数据目录，用户表为空。
 
 # 监听地址
 listen = ":19999"
 
-# 数据根目录：PyPI 包存放在 <root>/pypi/，Python 安装包存放在 <root>/python/，
-# npm 包存放在 <root>/npm/
+# 数据根目录，每种镜像类型占一个子目录：pypi、python、npm、node、golang、gomod。
+# 相对路径基于配置文件目录解析；无配置文件时基于二进制目录。
 root = "./data"
 
 # Basic auth 用户表（用户名 = "密码"）。
-# 留空或不写 [users] 段表示不启用认证（任何人可访问和上传）。
+# 留空或不写 [users] 段允许匿名浏览、下载、上传和删除。
+# 启动前将下方占位口令替换为自己的随机长口令。
 [users]
 admin = "CHANGE_ME_BEFORE_STARTING"

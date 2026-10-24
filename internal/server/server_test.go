@@ -57,10 +57,11 @@ func postUpload(t *testing.T, url, user, pass, typ, name, tag, wantSHA, filename
 	return resp
 }
 
+// TestAuth 验证无凭据、错误口令返回 401，正确凭据可读取索引。
 func TestAuth(t *testing.T) {
 	_, ts, _ := newTestServer(t, map[string]string{"testuser": "test-password"})
 	// 无凭据 401
-	resp, _ := http.Get(ts.URL + "/simple/")
+	resp, _ := http.Get(ts.URL + "/mirror/simple/")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("无凭据应 401, 得到 %d", resp.StatusCode)
 	}
@@ -70,7 +71,7 @@ func TestAuth(t *testing.T) {
 		t.Errorf("错误密码应 401, 得到 %d", resp.StatusCode)
 	}
 	// 正确凭据 200
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/simple/", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/mirror/simple/", nil)
 	req.SetBasicAuth("testuser", "test-password")
 	resp, _ = http.DefaultClient.Do(req)
 	if resp.StatusCode != http.StatusOK {
@@ -97,16 +98,16 @@ func TestUploadPypiAndSimple(t *testing.T) {
 	}
 
 	// simple 根索引与包页面
-	resp, _ = http.Get(ts.URL + "/simple/")
+	resp, _ = http.Get(ts.URL + "/mirror/simple/")
 	rootPage, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if !strings.Contains(string(rootPage), ">zope-interface<") {
 		t.Error("simple 根索引缺少包名")
 	}
-	resp, _ = http.Get(ts.URL + "/simple/zope-interface/")
+	resp, _ = http.Get(ts.URL + "/mirror/simple/zope-interface/")
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(page), `href="/pypi/zope-interface/Zope_Interface-6.1-py3-none-any.whl#sha256=`+want) {
+	if !strings.Contains(string(page), `href="/mirror/pypi/zope-interface/Zope_Interface-6.1-py3-none-any.whl#sha256=`+want) {
 		t.Errorf("simple 包页面 anchor 错误: %s", page)
 	}
 	if !strings.Contains(string(page), "content=\"1.0\"") {
@@ -114,11 +115,24 @@ func TestUploadPypiAndSimple(t *testing.T) {
 	}
 
 	// 文件下载
-	resp, _ = http.Get(ts.URL + "/pypi/zope-interface/Zope_Interface-6.1-py3-none-any.whl")
+	resp, _ = http.Get(ts.URL + "/mirror/pypi/zope-interface/Zope_Interface-6.1-py3-none-any.whl")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("包文件下载应 200, 得到 %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+
+	// PyPI 包详情路径为 /browse/pypi/{name}/
+	resp, _ = http.Get(ts.URL + "/browse/pypi/zope-interface/")
+	page2, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(page2), "Zope_Interface-6.1-py3-none-any.whl") {
+		t.Errorf("PyPI 包详情应 200 且列出文件, 得到 %d", resp.StatusCode)
+	}
+	resp, _ = http.Get(ts.URL + "/browse/zope-interface/")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("裸类型段下的旧详情路径应 404, 得到 %d", resp.StatusCode)
+	}
 }
 
 func TestUploadIdempotentAndConflict(t *testing.T) {
@@ -167,13 +181,13 @@ func TestUploadPythonAndValidation(t *testing.T) {
 		t.Fatal("python 未按 tag 落盘")
 	}
 	// 下载成功
-	resp, _ = http.Get(ts.URL + "/python/20261021/cpython-3.13.1-linux.tar.gz")
+	resp, _ = http.Get(ts.URL + "/mirror/python/20261021/cpython-3.13.1-linux.tar.gz")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("python 文件下载应 200, 得到 %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 	// 未同步文件 → 404 提示页
-	resp, _ = http.Get(ts.URL + "/python/20260101/cpython-3.12.9-windows.tar.gz")
+	resp, _ = http.Get(ts.URL + "/mirror/python/20260101/cpython-3.12.9-windows.tar.gz")
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(page), "文件未同步") {
@@ -224,13 +238,13 @@ func TestNpmUploadAndServe(t *testing.T) {
 
 	// packument 请求（%2F 编码形式）：tarball 地址重写为本镜像
 	host := strings.TrimPrefix(ts.URL, "http://")
-	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg")
+	resp, _ = http.Get(ts.URL + "/mirror/npm/@scope%2Fpkg")
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("packument 应 200, 得到 %d", resp.StatusCode)
 	}
-	want := "http://" + host + "/npm/@scope/pkg/-/pkg-1.0.0.tgz"
+	want := "http://" + host + "/mirror/npm/@scope/pkg/-/pkg-1.0.0.tgz"
 	if !strings.Contains(string(body), want) {
 		t.Errorf("tarball 地址未重写为 %s: %s", want, body)
 	}
@@ -239,7 +253,7 @@ func TestNpmUploadAndServe(t *testing.T) {
 	}
 
 	// tarball 下载：编码与未编码两种路径形式
-	for _, p := range []string{"/npm/@scope%2Fpkg/-/pkg-1.0.0.tgz", "/npm/@scope/pkg/-/pkg-1.0.0.tgz"} {
+	for _, p := range []string{"/mirror/npm/@scope%2Fpkg/-/pkg-1.0.0.tgz", "/mirror/npm/@scope/pkg/-/pkg-1.0.0.tgz"} {
 		resp, _ = http.Get(ts.URL + p)
 		got, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -249,14 +263,14 @@ func TestNpmUploadAndServe(t *testing.T) {
 	}
 
 	// 非 scoped 包 packument（无 /-/ 段）
-	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg")
+	resp, _ = http.Get(ts.URL + "/mirror/npm/@scope%2Fpkg")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("非文件形式请求应返回 packument, 得到 %d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	// 未同步包 → 404 提示页
-	resp, _ = http.Get(ts.URL + "/npm/missing-pkg")
+	resp, _ = http.Get(ts.URL + "/mirror/npm/missing-pkg")
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(page), "文件未同步") {
@@ -276,7 +290,7 @@ func TestNpmUploadAndServe(t *testing.T) {
 	}
 	resp.Body.Close()
 	// 首页与浏览页包含 npm 统计
-	resp, _ = http.Get(ts.URL + "/npm/")
+	resp, _ = http.Get(ts.URL + "/browse/npm/")
 	page, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(page), "@scope/pkg") {
@@ -288,11 +302,11 @@ func TestNpmUploadAndServe(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK ||
 		!strings.Contains(string(page), "pkg-1.0.0.tgz") ||
-		!strings.Contains(string(page), `href="/npm/@scope/pkg/-/packument.json"`) {
+		!strings.Contains(string(page), `href="/mirror/npm/@scope/pkg/-/packument.json"`) {
 		t.Errorf("npm 详情页应列出文件与下载链接, 得到 %d: %s", resp.StatusCode, page)
 	}
 	// packument.json 经 /-/ 路由可下载原始文件（与 packument 协议端点互不影响）
-	resp, _ = http.Get(ts.URL + "/npm/@scope%2Fpkg/-/packument.json")
+	resp, _ = http.Get(ts.URL + "/mirror/npm/@scope%2Fpkg/-/packument.json")
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "registry.npmjs.org") {
@@ -326,7 +340,7 @@ func TestUploadNodeAndServe(t *testing.T) {
 	}
 
 	// 文件按 dist 布局可下载，落盘目录与官方一致
-	page, err := http.Get(ts.URL + "/node/v22.14.0/node-v22.14.0-linux-x64.tar.xz")
+	page, err := http.Get(ts.URL + "/mirror/node/v22.14.0/node-v22.14.0-linux-x64.tar.xz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,23 +353,23 @@ func TestUploadNodeAndServe(t *testing.T) {
 		t.Fatal("SHASUMS256.txt 未按 dist 布局落盘")
 	}
 
-	// 未同步文件返回 404 + 提示页；非法版本目录与非法文件名 404
-	page, _ = http.Get(ts.URL + "/node/v22.11.0/node-v22.11.0-win-x64.zip")
+	// 未同步文件返回 404 + 提示页；非法版本目录、非法文件名与裸根 404
+	page, _ = http.Get(ts.URL + "/mirror/node/v22.11.0/node-v22.11.0-win-x64.zip")
 	body, _ = io.ReadAll(page.Body)
 	page.Body.Close()
 	if page.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "pkgmirror download node") {
 		t.Fatalf("未同步文件应 404 + 提示页，实际 %d", page.StatusCode)
 	}
-	for _, bad := range []string{"/node/22.14.0/x", "/node/v22.14.0/a%2Fb", "/node/"} {
+	for _, bad := range []string{"/mirror/node/22.14.0/x", "/mirror/node/v22.14.0/a%2Fb", "/mirror/node/"} {
 		page, _ = http.Get(ts.URL + bad)
 		page.Body.Close()
-		if bad != "/node/" && page.StatusCode != http.StatusNotFound {
+		if page.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s 应 404，实际 %d", bad, page.StatusCode)
 		}
 	}
 
 	// 浏览页列出已同步版本
-	page, _ = http.Get(ts.URL + "/node/")
+	page, _ = http.Get(ts.URL + "/browse/node/")
 	body, _ = io.ReadAll(page.Body)
 	page.Body.Close()
 	if !strings.Contains(string(body), "node-v22.14.0-linux-x64.tar.xz") {
@@ -416,35 +430,35 @@ func TestAccessLog(t *testing.T) {
 	sum := sha256.Sum256(content)
 	resp := postUpload(t, ts.URL, "", "", "pypi", "demo", "", hex.EncodeToString(sum[:]), "demo-1.0.tar.gz", content)
 	resp.Body.Close()
-	resp, _ = http.Get(ts.URL + "/pypi/demo/demo-1.0.tar.gz")
+	resp, _ = http.Get(ts.URL + "/mirror/pypi/demo/demo-1.0.tar.gz")
 	resp.Body.Close()
 	logs := buf.String()
 	if !strings.Contains(logs, "已接收 ip=127.0.0.1 pypi/demo/demo-1.0.tar.gz") {
 		t.Errorf("上传日志应含来源 IP: %q", logs)
 	}
-	if !strings.Contains(logs, "下载 ip=127.0.0.1 GET /pypi/demo/demo-1.0.tar.gz 200 11B") {
+	if !strings.Contains(logs, "下载 ip=127.0.0.1 GET /mirror/pypi/demo/demo-1.0.tar.gz 200 11B") {
 		t.Errorf("下载日志格式不符: %q", logs)
 	}
 
 	// python 未同步 → 缺失日志
 	buf.Reset()
-	resp, _ = http.Get(ts.URL + "/python/20260101/cpython-3.12.9-linux.tar.gz")
+	resp, _ = http.Get(ts.URL + "/mirror/python/20260101/cpython-3.12.9-linux.tar.gz")
 	resp.Body.Close()
-	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /python/20260101/cpython-3.12.9-linux.tar.gz 404 0B") {
+	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /mirror/python/20260101/cpython-3.12.9-linux.tar.gz 404 0B") {
 		t.Errorf("缺失日志格式不符: %q", logs)
 	}
 
 	// npm packument 未同步 → 缺失日志（经 npmNotFound）
 	buf.Reset()
-	resp, _ = http.Get(ts.URL + "/npm/missing-pkg")
+	resp, _ = http.Get(ts.URL + "/mirror/npm/missing-pkg")
 	resp.Body.Close()
-	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /npm/missing-pkg 404 0B") {
+	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /mirror/npm/missing-pkg 404 0B") {
 		t.Errorf("npm 缺失日志格式不符: %q", logs)
 	}
 
 	// 反代场景：X-Forwarded-For 透传到下载日志
 	buf.Reset()
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/pypi/demo/demo-1.0.tar.gz", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/mirror/pypi/demo/demo-1.0.tar.gz", nil)
 	req.Header.Set("X-Forwarded-For", "192.168.1.30, 10.0.0.1")
 	http.DefaultClient.Do(req)
 	if logs = buf.String(); !strings.Contains(logs, "下载 ip=192.168.1.30") {
@@ -461,11 +475,11 @@ func TestNavGroupAndFilter(t *testing.T) {
 	resp.Body.Close()
 
 	// 导航分组：无品牌文字；组名带 cut 分隔类，语言本体在前、包在后
-	page, _ := http.Get(ts.URL + "/browse/")
+	page, _ := http.Get(ts.URL + "/browse/pypi/")
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
 	html := string(body)
-	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><b class="cut">Go</b><a href="/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>`)
+	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/browse/python/">安装包</a><a href="/browse/pypi/">PyPI 包</a><b class="cut">Node.js</b><a href="/browse/node/">安装包</a><a href="/browse/npm/">npm 包</a><b class="cut">Go</b><a href="/browse/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>`)
 	if pyPos < 0 || strings.Contains(html, `<b>pkgmirror</b>`) {
 		t.Errorf("导航分组结构不符:\n%s", html)
 	}
@@ -497,7 +511,7 @@ func TestNavGroupAndFilter(t *testing.T) {
 	}
 
 	// Python 列表页同样具备过滤能力（无数据时无表格，本例只验证脚本引用）
-	page, _ = http.Get(ts.URL + "/python/")
+	page, _ = http.Get(ts.URL + "/browse/python/")
 	body, _ = io.ReadAll(page.Body)
 	page.Body.Close()
 	if !strings.Contains(string(body), `src="/static/ufuzzy.min.js"`) {
@@ -556,19 +570,19 @@ func TestUploadGolangAndServe(t *testing.T) {
 		}
 	}
 	// 归档可下载、伴随 .sha256 可下载（同一路由）
-	for _, path := range []string{"/golang/go1.23.4.linux-amd64.tar.gz", "/golang/go1.23.4.linux-amd64.tar.gz.sha256"} {
+	for _, path := range []string{"/mirror/golang/go1.23.4.linux-amd64.tar.gz", "/mirror/golang/go1.23.4.linux-amd64.tar.gz.sha256"} {
 		resp, _ = http.Get(ts.URL + path)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s 应 200，得到 %d", path, resp.StatusCode)
 		}
 	}
 	// 缺失 404 提示页
-	resp, _ = http.Get(ts.URL + "/golang/go1.20.0.linux-amd64.tar.gz")
+	resp, _ = http.Get(ts.URL + "/mirror/golang/go1.20.0.linux-amd64.tar.gz")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("缺失归档应 404，得到 %d", resp.StatusCode)
 	}
 	// 浏览页含文件名
-	resp, _ = http.Get(ts.URL + "/golang/")
+	resp, _ = http.Get(ts.URL + "/browse/golang/")
 	page, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(page), "go1.23.4.linux-amd64.tar.gz") {
 		t.Fatal("浏览页应列出归档文件")
@@ -594,43 +608,43 @@ func TestGoproxyServe(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "v1.1.0.info"), []byte(`{"Version":"v1.1.0","Time":"2024-01-01T00:00:00Z"}`), 0o644)
 
 	// 大写模块：URL 用 !azure 转义，命中磁盘上的原始大小写目录
-	resp, err := http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.zip")
+	resp, err := http.Get(ts.URL + "/mirror/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.zip")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("zip 应 200: %v %d", err, resp.StatusCode)
 	}
-	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.mod")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.mod")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("mod 应 200，得到 %d", resp.StatusCode)
 	}
 	// @v/list：版本并集降序
-	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/list")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/github.com/!azure/go-ansiterm/@v/list")
 	list, _ := io.ReadAll(resp.Body)
 	if strings.TrimSpace(string(list)) != "v1.1.0\nv1.0.0" {
 		t.Fatalf("@v/list 应为 v1.1.0/v1.0.0 两行，得到 %q", string(list))
 	}
 	// @latest：最大版本的 info 原文
-	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@latest")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/github.com/!azure/go-ansiterm/@latest")
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), `"Version":"v1.1.0"`) {
 		t.Fatalf("@latest 应返回 v1.1.0 的 info，得到 %q", string(body))
 	}
 	// 缺失 404（协议回退语义）
-	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v9.9.9.zip")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/github.com/!azure/go-ansiterm/@v/v9.9.9.zip")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("缺失版本应 404，得到 %d", resp.StatusCode)
 	}
 	// 未知模块 404
-	resp, _ = http.Get(ts.URL + "/goproxy/example.com/nope/@v/v1.0.0.mod")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/example.com/nope/@v/v1.0.0.mod")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("未知模块应 404，得到 %d", resp.StatusCode)
 	}
 	// 非法转义（! 后大写）404
-	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!Azure/x/@v/v1.0.0.mod")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/github.com/!Azure/x/@v/v1.0.0.mod")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("非法转义应 404，得到 %d", resp.StatusCode)
 	}
 	// sumdb 探测不实现：404（go 命令据此直连或按 GOSUMDB=off 跳过）
-	resp, _ = http.Get(ts.URL + "/goproxy/sumdb/sum.golang.org/supported")
+	resp, _ = http.Get(ts.URL + "/mirror/goproxy/sumdb/sum.golang.org/supported")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("sumdb 探测应 404，得到 %d", resp.StatusCode)
 	}
@@ -642,7 +656,7 @@ func TestGoproxyServe(t *testing.T) {
 	}
 	resp, _ = http.Get(ts.URL + "/browse/gomod/github.com/Azure/go-ansiterm/")
 	page, _ = io.ReadAll(resp.Body)
-	if !strings.Contains(string(page), "/goproxy/github.com/!azure/go-ansiterm/@v/v1.1.0.info") {
+	if !strings.Contains(string(page), "/mirror/goproxy/github.com/!azure/go-ansiterm/@v/v1.1.0.info") {
 		t.Fatal("详情页链接应指向转义后的协议端点")
 	}
 }
@@ -686,7 +700,7 @@ func TestUploadGomodValidation(t *testing.T) {
 // 内联匹配脚本（匹配逻辑由浏览器执行，这里只验证注入完整）。
 func TestNavCurrentScript(t *testing.T) {
 	_, ts, _ := newTestServer(t, nil)
-	pages := []string{"/", "/python/", "/browse/", "/npm/", "/node/", "/golang/", "/browse/gomod/", "/upload"}
+	pages := []string{"/", "/browse/python/", "/browse/pypi/", "/browse/npm/", "/browse/node/", "/browse/golang/", "/browse/gomod/", "/upload"}
 	for _, p := range pages {
 		resp, err := http.Get(ts.URL + p)
 		if err != nil {

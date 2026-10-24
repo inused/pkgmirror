@@ -120,22 +120,21 @@ func New(cfg Config) *Server {
 
 // Handler 组装全部路由并套上 Basic auth 中间件。
 //
+// URL 空间按用途分两层：/mirror/* 只返回机器数据（协议响应与文件），
+// /browse/* 只返回人用 HTML 页面（布局见 docs/路由设计.md）。裸
+// /mirror/{类型} 无尾斜杠时由 ServeMux 301 到带斜杠形式。
+//
 //	@return http.Handler 完整的 HTTP 处理器。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
-	mux.HandleFunc("/simple", s.handleSimpleRoot)
-	mux.HandleFunc("/simple/", s.handleSimple)
-	mux.HandleFunc("/pypi/", s.handlePypiFiles)
-	mux.HandleFunc("/python", s.handlePythonBrowse)
-	mux.HandleFunc("/python/", s.handlePython)
-	mux.HandleFunc("/npm", s.handleNpm)
-	mux.HandleFunc("/npm/", s.handleNpm)
-	mux.HandleFunc("/node", s.handleNode)
-	mux.HandleFunc("/node/", s.handleNode)
-	mux.HandleFunc("/golang", s.handleGolang)
-	mux.HandleFunc("/golang/", s.handleGolang)
-	mux.HandleFunc("/goproxy/", s.handleGoProxy)
+	mux.HandleFunc("/mirror/simple/", s.handleSimple)
+	mux.HandleFunc("/mirror/pypi/", s.handlePypiFiles)
+	mux.HandleFunc("/mirror/python/", s.handlePython)
+	mux.HandleFunc("/mirror/npm/", s.handleNpm)
+	mux.HandleFunc("/mirror/node/", s.handleNode)
+	mux.HandleFunc("/mirror/golang/", s.handleGolang)
+	mux.HandleFunc("/mirror/goproxy/", s.handleGoProxy)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
@@ -250,21 +249,21 @@ func (s *Server) handleSimpleRoot(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html><head><meta name=\"pypi:repository-version\" content=\"1.0\"><title>Simple index</title></head><body>\n")
 	for _, name := range pkgs {
-		fmt.Fprintf(&b, "<a href=\"/simple/%s/\">%s</a><br/>\n", name, name)
+		fmt.Fprintf(&b, "<a href=\"/mirror/simple/%s/\">%s</a><br/>\n", name, name)
 	}
 	b.WriteString("</body></html>\n")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, b.String())
 }
 
-// handleSimple 渲染单个包的 PEP 503 文件页，href 指向 /pypi/ 并带 #sha256= 片段。
+// handleSimple 渲染单个包的 PEP 503 文件页，href 指向 /mirror/pypi/ 并带 #sha256= 片段。
 func (s *Server) handleSimple(w http.ResponseWriter, r *http.Request) {
-	// /simple/ 与 /simple 均视为根索引（mux 前缀匹配会把两者都送进本函数）
-	if r.URL.Path == "/simple/" || r.URL.Path == "/simple" {
+	// /mirror/simple/ 裸根渲染全部包名索引（无尾斜杠形式经 mux 301 到这里）
+	if r.URL.Path == "/mirror/simple/" {
 		s.handleSimpleRoot(w, r)
 		return
 	}
-	name := pypi.NormalizeName(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/simple/"), "/"))
+	name := pypi.NormalizeName(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/mirror/simple/"), "/"))
 	if !nameRe.MatchString(name) {
 		http.NotFound(w, r)
 		return
@@ -277,7 +276,7 @@ func (s *Server) handleSimple(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!DOCTYPE html>\n<html><head><meta name=\"pypi:repository-version\" content=\"1.0\"><title>Links for %s</title></head><body>\n<h1>Links for %s</h1>\n", name, name)
 	for _, f := range files {
-		fmt.Fprintf(&b, "<a href=\"/pypi/%s/%s#sha256=%s\">%s</a><br/>\n", name, f.Name, f.SHA256, f.Name)
+		fmt.Fprintf(&b, "<a href=\"/mirror/pypi/%s/%s#sha256=%s\">%s</a><br/>\n", name, f.Name, f.SHA256, f.Name)
 	}
 	b.WriteString("</body></html>\n")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -390,10 +389,10 @@ func (s *Server) listPythonTags() ([]string, error) {
 	return tags, nil
 }
 
-// handlePypiFiles 提供 PyPI 包文件下载。包名与文件名走白名单校验，天然无路径穿越。
+// handlePypiFiles 按包名和文件名白名单校验路径，提供 PyPI 包文件下载。
 // 下载与缺失均记录访问日志。
 func (s *Server) handlePypiFiles(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/pypi/")
+	rest := strings.TrimPrefix(r.URL.Path, "/mirror/pypi/")
 	name, filename, ok := strings.Cut(rest, "/")
 	if !ok || !nameRe.MatchString(name) || !fileRe.MatchString(filename) {
 		logAccess(r, "缺失", http.StatusNotFound, 0)
@@ -411,24 +410,21 @@ func (s *Server) handlePypiFiles(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
-// handlePython 提供安装包浏览列表与文件下载。
+// handlePython 提供安装包文件下载（/mirror/python/{tag}/{file}）。
 //
-// /python/ 与 /python/{tag}/ 返回列表页；/python/{tag}/{file} 返回文件。
-// 文件不存在时返回 404 状态码 + HTML 提示页，提示先在外网补下载再上传。
+// 裸根与仅到 tag 层的目录 URL 无内容（人用列表页在 /browse/python/），
+// 一律 404。文件不存在时返回 404 状态码 + HTML 提示页，提示先在外网
+// 补下载再上传。
 func (s *Server) handlePython(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/python/"), "/")
-	if rest == "" {
-		s.handlePythonBrowse(w, r)
-		return
-	}
+	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/mirror/python/"), "/")
 	tag, filename, hasFile := strings.Cut(rest, "/")
-	if !tagRe.MatchString(tag) {
-		logAccess(r, "缺失", http.StatusNotFound, 0)
+	if !hasFile {
 		http.NotFound(w, r)
 		return
 	}
-	if !hasFile {
-		s.handlePythonBrowse(w, r)
+	if !tagRe.MatchString(tag) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
+		http.NotFound(w, r)
 		return
 	}
 	if !fileRe.MatchString(filename) {
@@ -496,15 +492,17 @@ func (s *Server) handlePythonBrowse(w http.ResponseWriter, r *http.Request) {
 	render(w, pythonTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
-// handleNode 提供 Node 发行版分发：/node/ 与 /node/{vX.Y.Z}/ 为浏览页，
-// /node/{vX.Y.Z}/{file} 为文件下载（含 SHASUMS256.txt）。
+// handleNode 提供 Node 发行版分发：/mirror/node/{vX.Y.Z}/{file} 为文件
+// 下载（含 SHASUMS256.txt），裸根与版本目录层 404（人用列表页在
+// /browse/node/）。
 //
 // 目录布局与官方 nodejs.org/dist 一致，nvm/nvm-windows/n/mise 等版本管理器
-// 把镜像变量指向 /node 即可直接安装。文件不存在时返回 404 + HTML 提示页。
+// 把镜像变量指向 /mirror/node 即可直接安装。文件不存在时返回 404 + HTML 提示页。
 func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/node/"), "/")
+	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/mirror/node/"), "/")
 	if rest == "" || !strings.Contains(rest, "/") {
-		s.handleNodeBrowse(w, r)
+		// 裸根与版本目录层无内容（人用列表页在 /browse/node/）
+		http.NotFound(w, r)
 		return
 	}
 	version, filename, _ := strings.Cut(rest, "/")
@@ -575,15 +573,16 @@ func (s *Server) handleNodeBrowse(w http.ResponseWriter, r *http.Request) {
 	render(w, nodeTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
-// handleGolang 提供 Go 发行归档分发：/golang/ 为浏览页，/golang/{file} 为
-// 归档下载。目录布局与官方 dl.google.com/go 一致（全部文件平铺在根下），
-// mise / asdf-golang 等版本管理器把镜像变量指向 /golang 即可直接安装。
+// handleGolang 提供 Go 发行归档分发：/mirror/golang/{file} 为归档下载，
+// 裸根 404（人用列表页在 /browse/golang/）。目录布局与官方
+// dl.google.com/go 一致（全部文件平铺在根下），mise / asdf-golang 等
+// 版本管理器把镜像变量指向 /mirror/golang 即可直接安装。
 // 文件不存在时返回 404 + HTML 提示页；伴随的 .sha256 缓存文件同路由直接
 // 可得（mise 校验依赖它，格式与官方一致）。
 func (s *Server) handleGolang(w http.ResponseWriter, r *http.Request) {
-	filename := strings.Trim(strings.TrimPrefix(r.URL.Path, "/golang/"), "/")
+	filename := strings.Trim(strings.TrimPrefix(r.URL.Path, "/mirror/golang/"), "/")
 	if filename == "" {
-		s.handleGolangBrowse(w, r)
+		http.NotFound(w, r)
 		return
 	}
 	if !fileRe.MatchString(filename) {
@@ -668,18 +667,18 @@ func (s *Server) goProxyNotFound(w http.ResponseWriter, r *http.Request) {
 	renderBody(w, gomod404Tpl, map[string]any{"Path": r.URL.Path})
 }
 
-// handleGoProxy 提供 module proxy 协议子集（经现有 Basic auth 中间件）：
+// handleGoProxy 提供 module proxy 协议端点：
 //
-//	GET /goproxy/{模块}/@v/{版本}.{mod|zip|info}  静态文件
-//	GET /goproxy/{模块}/@v/list                   目录扫描合成
-//	GET /goproxy/{模块}/@latest                   最大版本的 info 合成
+//	GET /mirror/goproxy/{模块}/@v/{版本}.{mod|zip|info}  静态文件
+//	GET /mirror/goproxy/{模块}/@v/list                   目录扫描合成
+//	GET /mirror/goproxy/{模块}/@latest                   最大版本的 info 合成
 //
-// 路径解析用 EscapedPath + PathUnescape（npm 的 %2F 同款手法）还原模块
+// 路径解析用 EscapedPath + PathUnescape 还原模块
 // 路径，再做 !x 大写解码；模块路径白名单校验防穿越。其余形式（含模块根
 // 与 /sumdb/ 转发探测）一律 404：协议未定义根端点，sumdb 探测得 404 后
 // go 命令自行直连或按 GOSUMDB=off 跳过。
 func (s *Server) handleGoProxy(w http.ResponseWriter, r *http.Request) {
-	rest := strings.Trim(strings.TrimPrefix(r.URL.EscapedPath(), "/goproxy/"), "/")
+	rest := strings.Trim(strings.TrimPrefix(r.URL.EscapedPath(), "/mirror/goproxy/"), "/")
 	if rest == "" {
 		s.goProxyNotFound(w, r)
 		return
@@ -927,17 +926,18 @@ func (s *Server) handleGomodPkgPage(w http.ResponseWriter, r *http.Request, mod 
 	render(w, gomodPkgTpl, map[string]any{"Name": mod, "Escaped": gomod.EscapeModulePath(mod), "Files": files})
 }
 
-// handleNpm 提供 npm registry 协议：/npm/ 为浏览页，/npm/{name} 返回
-// packument（tarball 地址重写为本镜像），/npm/{name}/-/{file} 返回 tarball。
+// handleNpm 提供 npm registry 协议：/mirror/npm/{name} 返回 packument
+// （tarball 地址重写为本镜像），/mirror/npm/{name}/-/{file} 返回 tarball；
+// 裸根 404（人用列表页在 /browse/npm/）。
 //
 // 必须用 r.URL.EscapedPath() 而非 r.URL.Path：scoped 包名的 / 在请求中
 // 编码为 %2F，net/http 解码后 Path 中的 / 会与 tarball 路径的多段结构
 // 混淆；EscapedPath 保留 %2F，先按 "/-/" 段切出文件部分，再解码包名。
 // 两种请求形式（%2F 编码与裸 /）均兼容。
 func (s *Server) handleNpm(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/npm/"), "/")
+	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/mirror/npm/"), "/")
 	if rest == "" {
-		s.handleNpmBrowse(w, r)
+		http.NotFound(w, r)
 		return
 	}
 	rawName, file, isFile := strings.Cut(rest, "/-/")
@@ -1115,12 +1115,31 @@ func (s *Server) handleNpmPkgPage(w http.ResponseWriter, r *http.Request, name s
 	render(w, npmPkgTpl, map[string]any{"Name": name, "Files": files})
 }
 
-// handleBrowse 渲染人用的包浏览页。
+// handleBrowse 渲染人用的浏览页。
 //
-// /browse/ 为 PyPI 包列表；/browse/npm/ 转发 npm 包列表；
-// /browse/npm/{name}/ 为 npm 包详情；其余 /browse/{name}/ 为 PyPI 包详情。
+// /browse/{类型}/ 为列表页：pypi、npm、gomod 为包与模块，python、node、
+// golang 为安装包；/browse/pypi/{name}/ 与 /browse/npm/{name}/ 为包详情，
+// /browse/gomod/{模块}/ 为模块详情。类型段固定为保留字，包名挂在类型段
+// 之下，包名与类型词永不冲突（如 PyPI 包 npm 的详情是 /browse/pypi/npm/）。
+// 裸 /browse/ 无总列表页，404 由导航选择类型。
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/browse/"), "/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if rest == "python" {
+		s.handlePythonBrowse(w, r)
+		return
+	}
+	if rest == "node" {
+		s.handleNodeBrowse(w, r)
+		return
+	}
+	if rest == "golang" {
+		s.handleGolangBrowse(w, r)
+		return
+	}
 	if rest == "npm" {
 		s.handleNpmBrowse(w, r)
 		return
@@ -1138,7 +1157,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		s.handleGomodPkgPage(w, r, name)
 		return
 	}
-	if rest == "" {
+	if rest == "pypi" {
 		type row struct {
 			Name  string
 			Count int
@@ -1162,13 +1181,17 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		render(w, browseTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 		return
 	}
-	name := pypi.NormalizeName(rest)
-	files, err := s.listDistFiles(name)
-	if err != nil {
-		http.NotFound(w, r)
+	if name, ok := strings.CutPrefix(rest, "pypi/"); ok && name != "" {
+		name := pypi.NormalizeName(name)
+		files, err := s.listDistFiles(name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		render(w, browsePkgTpl, map[string]any{"Name": name, "Files": files})
 		return
 	}
-	render(w, browsePkgTpl, map[string]any{"Name": name, "Files": files})
+	http.NotFound(w, r)
 }
 
 // handleUploadPage 渲染上传表单页；POST 也接收（表单直接提交到本页路径，便于带结果提示）。

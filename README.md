@@ -7,8 +7,9 @@ Go 模块的按需镜像能力。
 ## 功能特性
 
 - **Python 安装包镜像**：`uv python install` 直接可用（含精确补丁版本）
-- **npm 包镜像**：标准 registry 协议（packument + tarball），npm / pnpm / yarn 直接可用
+- **PyPI 包镜像**：PEP 503 simple 协议，pip / uv 直接可用
 - **Node 安装包镜像**：官方 nodejs.org/dist 布局（可移植归档 + SHASUMS256.txt），nvm / nvm-windows / n / mise 换镜像变量直接可用
+- **npm 包镜像**：标准 registry 协议（packument + tarball），npm / pnpm / yarn 直接可用
 - **Go 安装包镜像**：官方 dl.google.com/go flat 布局（归档 + .sha256 伴随文件），mise / asdf-golang 换镜像变量直接可用
 - **Go 模块镜像**：module proxy 协议（.mod/.zip/.info 静态 + @v/list 与 @latest 合成），GOPROXY 指向即用；go.sum 即精确闭包清单，裸模块名自动查上游 @latest 并按 .mod 递归展开依赖（下载端免外部工具）
 - **按需下载客户端**：自动解析依赖（uv / npm），支持按版本、操作系统、架构过滤；
@@ -55,31 +56,31 @@ cp resources/server.example.toml server.toml   # 修改监听地址、数据目�
 使用方接入（服务端首页会按实际访问地址生成可直接复制的配置）：
 
 ```bash
-export UV_INDEX_URL=http://user:pass@host:port/simple
-export UV_PYTHON_INSTALL_MIRROR=http://user:pass@host:port/python
+export UV_INDEX_URL=http://user:pass@host:port/mirror/simple
+export UV_PYTHON_INSTALL_MIRROR=http://user:pass@host:port/mirror/python
 ```
 
 ```ini
 # npm / pnpm（~/.npmrc 或项目 .npmrc；npm 不支持 URL 内嵌凭据）
-registry=http://host:port/npm/
+registry=http://host:port/mirror/npm/
 //host:port/:_auth=BASE64(user:pass)
 ```
 
 ```bash
 # Node 版本管理器（可选其一）
-export NVM_NODEJS_ORG_MIRROR=http://user:pass@host:19999/node   # nvm
-export N_NODE_MIRROR=http://user:pass@host:19999/node           # n
-export MISE_NODE_MIRROR_URL=http://user:pass@host:19999/node    # mise
-nvm node_mirror http://host:19999/node/                         # nvm-windows
+export NVM_NODEJS_ORG_MIRROR=http://user:pass@host:19999/mirror/node   # nvm
+export N_NODE_MIRROR=http://user:pass@host:19999/mirror/node           # n
+export MISE_NODE_MIRROR_URL=http://user:pass@host:19999/mirror/node    # mise
+nvm node_mirror http://host:19999/mirror/node/                         # nvm-windows
 ```
 
 ```bash
 # Go（模块代理三行一起用；GOTOOLCHAIN=local 是离线姿势，见 docs/golang设计.md）
-export GOPROXY=http://user:pass@host:19999/goproxy GOSUMDB=off GOTOOLCHAIN=local
+export GOPROXY=http://user:pass@host:19999/mirror/goproxy GOSUMDB=off GOTOOLCHAIN=local
 
 # Go 安装包（版本管理器二选一）
-export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/golang   # mise
-export GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/golang        # asdf-golang
+export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/mirror/golang   # mise
+export GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/mirror/golang        # asdf-golang
 ```
 
 之后 `uv pip install`、`uv python install`、`pip install --index-url ...`、

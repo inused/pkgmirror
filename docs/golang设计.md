@@ -109,13 +109,13 @@ data/
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/golang/` | Go 安装包浏览页（版本、文件、大小） |
-| GET | `/golang/{file}` | 归档下载；404 返回提示页"外网执行 download golang 补同步" |
-| GET | `/goproxy/{模块}/@v/{版本}.{mod\|zip\|info}` | 模块文件，`http.ServeFile` |
-| GET | `/goproxy/{模块}/@v/list` | 目录扫描合成：`@v/` 下文件名取版本并集，每行一个 |
-| GET | `/goproxy/{模块}/@latest` | 最大版本的 `.info` 内容；缺失时合成 `{"Version":"..."}` |
+| GET | `/browse/golang/` | Go 安装包浏览页（版本、文件、大小） |
+| GET | `/mirror/golang/{file}` | 归档下载；404 返回提示页"外网执行 download golang 补同步" |
+| GET | `/mirror/goproxy/{模块}/@v/{版本}.{mod\|zip\|info}` | 模块文件，`http.ServeFile` |
+| GET | `/mirror/goproxy/{模块}/@v/list` | 目录扫描合成：`@v/` 下文件名取版本并集，每行一个 |
+| GET | `/mirror/goproxy/{模块}/@latest` | 最大版本的 `.info` 内容；缺失时合成 `{"Version":"..."}` |
 | GET | `/browse/gomod/` | 模块浏览列表（递归扫描含 `@v` 的目录） |
-| GET | `/browse/gomod/{模块}/` | 模块详情页：文件列表（链接指向 `/goproxy/` 协议端点） |
+| GET | `/browse/gomod/{模块}/` | 模块详情页：文件列表（链接指向 `/mirror/goproxy/` 协议端点） |
 
 - 路径解析用 `r.URL.EscapedPath()` + `url.PathUnescape`（npm 的 `%2F`
   手法）：模块路径段还原后再做 `!x` 大写解码；`!` 后非字母视为非法；
@@ -153,15 +153,15 @@ data/
 
 ```bash
 # Go 模块代理（go build / go mod download / go install 直接可用）
-export GOPROXY=http://user:pass@host:19999/goproxy
+export GOPROXY=http://user:pass@host:19999/mirror/goproxy
 export GOSUMDB=off            # go.sum 完整时普通模块免 sumdb 校验
 export GOTOOLCHAIN=local      # 工具链不走下载，新版本人工 download golang 补装
 ```
 
 ```bash
 # Go 安装包（版本管理器二选一）
-export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/golang   # mise
-export GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/golang        # asdf-golang
+export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/mirror/golang   # mise
+export GO_DOWNLOAD_MIRROR=http://user:pass@host:19999/mirror/golang        # asdf-golang
 ```
 
 - `GOSUMDB=off` 后 go 命令信任镜像并把哈希写入 go.sum；仅 GOTOOLCHAIN=auto

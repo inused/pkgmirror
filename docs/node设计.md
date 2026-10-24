@@ -6,7 +6,7 @@
 
 1. 外网机按需下载指定 Node 版本的可移植归档（Linux/macOS tar.xz、
    Windows zip）与该版本 `SHASUMS256.txt`，U 盘拷入内网一键上传；
-2. 内网服务端按官方 dist 布局（`/node/vX.Y.Z/`）提供文件，版本管理器与
+2. 内网服务端按官方 dist 布局（`/mirror/node/vX.Y.Z/`）提供文件，版本管理器与
    浏览页均可直接使用；
 3. 内网机器可解压归档配 PATH 直接运行（便携式，无需安装器）；
 4. 上传通过 Basic auth 认证，重复上传相同文件按哈希跳过。
@@ -65,8 +65,8 @@ data/node/{vX.Y.Z}/
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/node/` | Node 安装包浏览页：版本列表（版本、文件、大小） |
-| GET | `/node/{vX.Y.Z}/{file}` | 文件下载；404 返回提示页"外网执行 download node <版本> 补同步" |
+| GET | `/browse/node/` | Node 安装包浏览页：版本列表（版本、文件、大小） |
+| GET | `/mirror/node/{vX.Y.Z}/{file}` | 文件下载；404 返回提示页"外网执行 download node <版本> 补同步" |
 
 - 版本目录名校验 `^v\d+\.\d+\.\d+$`，文件名按 `fileRe` 白名单校验；
 - 导航 Node.js 组包含“安装包”入口；首页展示 Node 版本数与版本管理器接入配置。
@@ -91,16 +91,16 @@ data/node/{vX.Y.Z}/
 
 ## 6. 内网接入（版本管理器）
 
-管理器镜像根指向 `/node`，首页按请求 Host 生成接入配置：
+管理器镜像根指向 `/mirror/node`，首页按请求 Host 生成接入配置：
 
 ```bash
-export NVM_NODEJS_ORG_MIRROR=http://user:pass@host:19999/node   # nvm
-export N_NODE_MIRROR=http://user:pass@host:19999/node           # n
-export MISE_NODE_MIRROR_URL=http://user:pass@host:19999/node    # mise（内嵌凭据未确认）
+export NVM_NODEJS_ORG_MIRROR=http://user:pass@host:19999/mirror/node   # nvm
+export N_NODE_MIRROR=http://user:pass@host:19999/mirror/node           # n
+export MISE_NODE_MIRROR_URL=http://user:pass@host:19999/mirror/node    # mise（内嵌凭据未确认）
 ```
 
 ```powershell
-nvm node_mirror http://host:19999/node/                          # nvm-windows（写入 settings.txt）
+nvm node_mirror http://host:19999/mirror/node/                          # nvm-windows（写入 settings.txt）
 ```
 
 各管理器随后 `nvm install 22` / `n 22` / `nvm use 22` / `mise use -g node@22`
@@ -114,7 +114,7 @@ Volta 不支持自定义镜像，其用户走浏览页手工下载解压。
   7z/exe 排除、缺失标识报错）、SHASUMS256.txt 解析与校验、上传 type=node
   的版本格式与路径校验、路由与浏览页数据；
 - 集成冒烟（真实网络）：`download node 22 --platform linux` → upload →
-  curl 校验 `/node/vX/` 归档与 SHASUMS256.txt → 有 nvm 环境时设
+  curl 校验 `/mirror/node/vX/` 归档与 SHASUMS256.txt → 有 nvm 环境时设
   `NVM_NODEJS_ORG_MIRROR` 实测 `nvm install` 成功；重复 upload 幂等；
 - 构建：运行 `go build ./...`，跨平台构建使用项目脚本。
 

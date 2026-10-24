@@ -174,10 +174,10 @@ func TestRewriteTarballs(t *testing.T) {
 	}
 	s := string(out)
 	// 全部版本的 tarball 重写，其它字段保留
-	if !strings.Contains(s, `"tarball":"http://h:8080/npm/lodash/-/lodash-4.17.20.tgz"`) {
+	if !strings.Contains(s, `"tarball":"http://h:8080/mirror/npm/lodash/-/lodash-4.17.20.tgz"`) {
 		t.Errorf("4.17.20 未重写: %s", s)
 	}
-	if !strings.Contains(s, `"tarball":"http://h:8080/npm/lodash/-/lodash-4.17.21.tgz"`) {
+	if !strings.Contains(s, `"tarball":"http://h:8080/mirror/npm/lodash/-/lodash-4.17.21.tgz"`) {
 		t.Errorf("4.17.21 未重写: %s", s)
 	}
 	if !strings.Contains(s, `"latest":"4.17.21"`) || !strings.Contains(s, `"modified"`) {
@@ -189,7 +189,7 @@ func TestRewriteTarballs(t *testing.T) {
 	// scoped 包名保留在 URL 中
 	scoped := `{"versions":{"1.0.0":{"dist":{"tarball":"https://registry.npmjs.org/@s/p/-/p-1.0.0.tgz"}}}}`
 	out, _ = RewriteTarballs([]byte(scoped), "http://h:1", "@s/p")
-	if !strings.Contains(string(out), `"tarball":"http://h:1/npm/@s/p/-/p-1.0.0.tgz"`) {
+	if !strings.Contains(string(out), `"tarball":"http://h:1/mirror/npm/@s/p/-/p-1.0.0.tgz"`) {
 		t.Errorf("scoped 包重写错误: %s", out)
 	}
 }

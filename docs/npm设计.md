@@ -62,8 +62,8 @@ data/
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/npm/{name}` | 返回 `npm/{name}/packument.json`，重写后动态生成 |
-| GET | `/npm/{name}/-/{file}` | tarball 下载，`http.ServeFile`（packument.json 原文件同样经此路由提供，供详情页下载链接） |
+| GET | `/mirror/npm/{name}` | 返回 `npm/{name}/packument.json`，重写后动态生成 |
+| GET | `/mirror/npm/{name}/-/{file}` | tarball 下载，`http.ServeFile`（packument.json 原文件同样经此路由提供，供详情页下载链接） |
 | GET | `/browse/npm/` | npm 包浏览列表页（人用） |
 | GET | `/browse/npm/{name}/` | npm 包详情页：文件列表（tarball 与 packument 的下载链接、大小、sha256） |
 
@@ -72,7 +72,7 @@ data/
 - 包名白名单：scope 为 `@[a-z0-9-~][a-z0-9-._~]*`，名部分为
   `[a-z0-9-~][a-z0-9-._~]*`，与 PEP 503 的 `nameRe` 相互独立；
 - tarball 重写：`encoding/json` 解为 `map[string]any`，遍历 `versions.*.
-  dist.tarball` 替换为 `http://{请求Host}/npm/{name}/-/{file}` 后序列化
+  dist.tarball` 替换为 `http://{请求Host}/mirror/npm/{name}/-/{file}` 后序列化
   返回；packument 不存在时返回 404，提示外网补下载；
 - 首页统计 npm 包数，导航 Node.js 组提供 npm 包列表入口；上传表单支持 `npm` 类型。
 
@@ -161,13 +161,13 @@ registry 协议是三者的公共标准，接入只需各自配置（首页配�
 
 ```ini
 ; .npmrc（npm 与 pnpm 读取）
-registry=http://host:8080/npm/
+registry=http://host:8080/mirror/npm/
 //host:8080/:_auth=<base64(user:pass)>
 ```
 
 ```yaml
 # .yarnrc.yml（yarn berry）
-npmRegistryServer: http://host:8080/npm/
+npmRegistryServer: http://host:8080/mirror/npm/
 npmAuthIdent: <base64(user:pass)>
 ```
 

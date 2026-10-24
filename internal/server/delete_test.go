@@ -427,8 +427,8 @@ func TestDeleteFormRedirect(t *testing.T) {
 	loc := resp.Header.Get("Location")
 	// 回跳固定为该类型列表页（不信任 Referer），http.Redirect 可能补全
 	// 为绝对 URL，按包含关系断言
-	if !strings.Contains(loc, "/browse/?msg=") {
-		t.Errorf("应重定向回 /browse/ 带 msg, 得到 %q", loc)
+	if !strings.Contains(loc, "/browse/pypi/?msg=") {
+		t.Errorf("应重定向回 /browse/pypi/ 带 msg, 得到 %q", loc)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Error("表单删除应已落盘删除")
@@ -463,7 +463,7 @@ func TestDeletePageButtons(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "golang", "go1.23.4.linux-amd64.tar.gz"), []byte("g"), 0o644)
 	writeGoModule(t, root, "github.com/spf13/cobra")
 
-	for _, page := range []string{"/browse/", "/python/", "/npm/", "/node/", "/golang/", "/browse/gomod/"} {
+	for _, page := range []string{"/browse/pypi/", "/browse/python/", "/browse/npm/", "/browse/node/", "/browse/golang/", "/browse/gomod/"} {
 		resp, err := http.Get(ts.URL + page)
 		if err != nil {
 			t.Fatal(err)
@@ -600,7 +600,7 @@ func TestDeleteListEntryField(t *testing.T) {
 	os.WriteFile(filepath.Join(nodeDir, "SHASUMS256.txt"), []byte("s"), 0o644)
 	os.WriteFile(filepath.Join(root, "golang", "go1.23.4.linux-amd64.tar.gz"), []byte("g"), 0o644)
 
-	for _, page := range []string{"/browse/", "/npm/", "/browse/gomod/"} {
+	for _, page := range []string{"/browse/pypi/", "/browse/npm/", "/browse/gomod/"} {
 		resp, _ := http.Get(ts.URL + page)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -610,7 +610,7 @@ func TestDeleteListEntryField(t *testing.T) {
 	}
 	// 安装包三类也走 dryRun 预览入口，目标为行级归档文件名（value 为
 	// 实际文件名而非版本）
-	for _, page := range []string{"/python/", "/node/", "/golang/"} {
+	for _, page := range []string{"/browse/python/", "/browse/node/", "/browse/golang/"} {
 		resp, _ := http.Get(ts.URL + page)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -618,7 +618,7 @@ func TestDeleteListEntryField(t *testing.T) {
 			t.Errorf("%s 删除按钮应走 dryRun 预览入口", page)
 		}
 	}
-	if page, _ := http.Get(ts.URL + "/python/"); true {
+	if page, _ := http.Get(ts.URL + "/browse/python/"); true {
 		body, _ := io.ReadAll(page.Body)
 		page.Body.Close()
 		// html/template 把文件名中的 + 转义为 &#43;（浏览器提交时自动还原）
@@ -627,7 +627,7 @@ func TestDeleteListEntryField(t *testing.T) {
 		}
 	}
 	// node 页 SHASUMS256.txt 行不渲染按钮：dryRun 表单只出现一次
-	if page, _ := http.Get(ts.URL + "/node/"); true {
+	if page, _ := http.Get(ts.URL + "/browse/node/"); true {
 		body, _ := io.ReadAll(page.Body)
 		page.Body.Close()
 		if n := strings.Count(string(body), `name="dryRun"`); n != 1 {

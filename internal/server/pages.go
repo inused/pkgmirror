@@ -94,7 +94,6 @@ const navCurScript = `<script>
 (function(){
   var links=document.querySelectorAll('nav a'),p=location.pathname;
   if(p.charAt(p.length-1)!=='/')p+='/';
-  p=p.replace(/^\/browse\/npm\//,'/npm/');
   var best=-1,bestLen=0;
   for(var i=0;i<links.length;i++){
     var h=links[i].getAttribute('href');
@@ -112,7 +111,7 @@ const navCurScript = `<script>
 // （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔；
 // 末尾内嵌当前页高亮脚本（见 navCurScript）。
 const navHead = `<div class="container">
-<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><b class="cut">Go</b><a href="/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>
+<nav><a href="/">首页</a><b class="cut">Python</b><a href="/browse/python/">安装包</a><a href="/browse/pypi/">PyPI 包</a><b class="cut">Node.js</b><a href="/browse/node/">安装包</a><a href="/browse/npm/">npm 包</a><b class="cut">Go</b><a href="/browse/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>
 ` + navCurScript
 
 // copyScript 是配置块的复制按钮脚本；浏览器不支持时退化为提示手动复制。
@@ -187,47 +186,46 @@ var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOC
 </div>
 <div class="cfg">
 <h2>uv 接入（环境变量，把 user:pass 换成本服务账号）</h2>
-<pre id="c1">export UV_INDEX_URL=http://user:pass@{{.Host}}/simple
-export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</pre>
+<pre id="c1">export UV_INDEX_URL=http://user:pass@{{.Host}}/mirror/simple
+export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/mirror/python</pre>
 <button class="copy" onclick="copyCmd('c1',this)">复制</button>
 </div>
 <div class="cfg">
 <h2>pip 接入（把 user:pass 换成本服务账号）</h2>
-<pre id="c2">pip install --index-url http://user:pass@{{.Host}}/simple 包名</pre>
+<pre id="c2">pip install --index-url http://user:pass@{{.Host}}/mirror/simple 包名</pre>
 <button class="copy" onclick="copyCmd('c2',this)">复制</button>
 </div>
 <div class="cfg">
-<h2>npm / pnpm 接入（写入用户或项目 .npmrc；pnpm 读取同一文件）</h2>
-<pre id="c3">registry=http://{{.Host}}/npm/
+<h2>npm / pnpm 接入（写入用户或项目 .npmrc）</h2>
+<pre id="c3">registry=http://{{.Host}}/mirror/npm/
 //{{.Host}}/:_auth=BASE64(user:pass)</pre>
 <button class="copy" onclick="copyCmd('c3',this)">复制</button>
 <p class="hint">BASE64(user:pass) 生成方式：<code>echo -n user:pass | base64</code>；
 yarn berry 用 <code>.yarnrc.yml</code> 的 <code>npmRegistryServer</code> 与 <code>npmAuthIdent</code>，取值相同。</p>
 </div>
 <div class="cfg">
-<h2>Node 版本管理器接入（四选一：用哪个工具就执行带它名字的那一行）</h2>
-<pre id="c4">export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/node   # nvm（macOS/Linux）
-export N_NODE_MIRROR=http://user:pass@{{.Host}}/node           # n
-export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/node    # mise
-nvm node_mirror http://{{.Host}}/node/                         # nvm-windows（执行一次，写入 settings.txt）</pre>
+<h2>Node 版本管理器接入（选择所用工具的配置）</h2>
+<pre id="c4">export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/mirror/node   # nvm（macOS/Linux）
+export N_NODE_MIRROR=http://user:pass@{{.Host}}/mirror/node           # n
+export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/mirror/node    # mise
+nvm node_mirror http://{{.Host}}/mirror/node/                         # nvm-windows（执行一次，写入 settings.txt）</pre>
 <button class="copy" onclick="copyCmd('c4',this)">复制</button>
-<p class="hint">四条只需执行与自己工具对应的一条，全部执行也无害（各工具只认自己的变量）；
-换源后照常 <code>nvm install 22</code> / <code>n 22</code> / <code>mise use -g node@22</code>。
-nvm-windows 与 mise 对 URL 内嵌凭据的支持未确认，401 时改匿名部署或走安装包页手工下载；
+<p class="hint">配置后执行 <code>nvm install 22</code> / <code>n 22</code> / <code>mise use -g node@22</code>。
+nvm-windows 与 mise 对 URL 内嵌凭据的支持未确认；返回 401 时检查认证配置，或登录安装包页手工下载；
 fnm 同布局可用 <code>FNM_NODE_DIST_MIRROR</code>；Volta 不支持自定义镜像。</p>
 </div>
 <div class="cfg">
 <h2>Go 接入（环境变量，把 user:pass 换成本服务账号）</h2>
-<pre id="c5">export GOPROXY=http://user:pass@{{.Host}}/goproxy
+<pre id="c5">export GOPROXY=http://user:pass@{{.Host}}/mirror/goproxy
 export GOSUMDB=off
 export GOTOOLCHAIN=local</pre>
 <button class="copy" onclick="copyCmd('c5',this)">复制</button>
-<p class="hint">三行缺一不可的语义：GOPROXY 指镜像后 go build / go mod download 直接走镜像；GOSUMDB=off 让 go 命令信任镜像（go.sum 完整时哈希照常校验）；GOTOOLCHAIN=local 禁止工具链联网下载（镜像不提供 sumdb，auto 模式必然失败，需要新 Go 版本时外网 download golang 补装）。缺模块时 404，外网补跑 <code>pkgmirror download gomod -r go.sum</code>。</p>
+<p class="hint">GOPROXY 指定模块镜像；GOSUMDB=off 关闭校验数据库请求，项目 go.sum 中已有的哈希仍照常校验；GOTOOLCHAIN=local 使用本地工具链。缺模块时在外网执行 <code>pkgmirror download gomod -r go.sum</code> 后上传；需要其他 Go 版本时执行 <code>pkgmirror download golang &lt;版本&gt;</code> 下载后安装。</p>
 </div>
 <div class="cfg">
-<h2>Go 版本管理器接入（二选一：用哪个工具就执行带它名字的那一行）</h2>
-<pre id="c6">export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang   # mise
-export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang        # asdf-golang</pre>
+<h2>Go 版本管理器接入（选择所用工具的配置）</h2>
+<pre id="c6">export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/mirror/golang   # mise
+export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/mirror/golang        # asdf-golang</pre>
 <button class="copy" onclick="copyCmd('c6',this)">复制</button>
 <p class="hint">换源后照常 <code>mise use -g golang@1.23</code> / <code>asdf install golang 1.23.4</code>；
 校验用的 .sha256 伴随文件随归档自动提供。gvm 与 <code>golang.org/dl</code> 辅助命令不支持自定义镜像，
@@ -241,11 +239,11 @@ var browseTpl = template.Must(template.New("browse").Funcs(tmplFuncs).Parse(`<!D
 ` + navHead + `
 <h1>PyPI 包列表</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
-<div class="cfgbar">pip：<code>pip install --index-url http://user:pass@{{.Host}}/simple 包名</code><br/>
-uv：<code>export UV_INDEX_URL=http://user:pass@{{.Host}}/simple</code></div>
+<div class="cfgbar">pip：<code>pip install --index-url http://user:pass@{{.Host}}/mirror/simple 包名</code><br/>
+uv：<code>export UV_INDEX_URL=http://user:pass@{{.Host}}/mirror/simple</code></div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 req" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td><a href="/browse/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="pypi"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
+{{range .Rows}}<tr><td><a href="/browse/pypi/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="pypi"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无包。请先执行 <code>pkgmirror download pypi</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -254,7 +252,7 @@ var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Pars
 ` + navHead + `
 <h1>{{.Name}}</h1>
 <table><thead><tr><th>文件</th><th>大小</th><th>sha256</th></tr></thead><tbody>
-{{range .Files}}<tr><td><a href="/pypi/{{$.Name}}/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td><td><code>{{.SHA256}}</code></td></tr>{{end}}
+{{range .Files}}<tr><td><a href="/mirror/pypi/{{$.Name}}/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td><td><code>{{.SHA256}}</code></td></tr>{{end}}
 </tbody></table>
 </div></body></html>`))
 
@@ -262,11 +260,11 @@ var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!D
 ` + navHead + `
 <h1>Python 安装包</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
-<p class="sub">python-build-standalone 构建：Astral 以 CPython 官方源码构建的便携归档，uv 的 <code>uv python install</code> 即从此下载（mise、bazel 等共用），<b>不是</b> python.org 官方安装器。归档可复制到同系统（OS+架构）的机器，解压配 PATH 直接使用：Windows 无 pip.exe（用 <code>python -m pip</code>，建议预装 VC++ 运行库），Linux 需 glibc ≥ 2.17。</p>
-<div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</code></div>
+<p class="sub">安装包由 Astral 的 python-build-standalone 项目以 CPython 源码构建，供 <code>uv python install</code> 使用。归档可复制到同系统、同架构的机器，解压后配置 PATH。Windows 使用 <code>python -m pip</code>，建议预装 VC++ 运行库；Linux 需满足所选归档的 libc 要求。</p>
+<div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/mirror/python</code></div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 3.12 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="python"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
+{{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/mirror/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="python"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Python 安装包。请先执行 <code>pkgmirror download python x.y</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -282,7 +280,7 @@ var npmBrowseTpl = template.Must(template.New("npmBrowse").Funcs(tmplFuncs).Pars
 ` + navHead + `
 <h1>npm 包列表</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
-<div class="cfgbar">npm：<code>npm config set registry http://{{.Host}}/npm/</code>（认证与 yarn 接入见首页）</div>
+<div class="cfgbar">npm：<code>npm config set registry http://{{.Host}}/mirror/npm/</code>（认证与 yarn 接入见首页）</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 lodash" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
 {{range .Rows}}<tr><td><a href="/browse/npm/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="npm"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
@@ -295,9 +293,9 @@ var npmPkgTpl = template.Must(template.New("npmPkg").Funcs(tmplFuncs).Parse(`<!D
 <h1>{{.Name}}</h1>
 <p class="sub">packument 是 npm 安装用的元数据文件，tarball 是包内容；两者共同构成镜像数据，均可点击下载。</p>
 <table><thead><tr><th>文件</th><th>大小</th><th>sha256</th></tr></thead><tbody>
-{{range .Files}}<tr><td><a href="/npm/{{$.Name}}/-/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td><td><code>{{.SHA256}}</code></td></tr>{{end}}
+{{range .Files}}<tr><td><a href="/mirror/npm/{{$.Name}}/-/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td><td><code>{{.SHA256}}</code></td></tr>{{end}}
 </tbody></table>
-<p class="hint">registry 协议入口（供 npm/pnpm/yarn）：<code>/npm/{{.Name}}</code></p>
+<p class="hint">registry 协议入口（供 npm/pnpm/yarn）：<code>/mirror/npm/{{.Name}}</code></p>
 </div></body></html>`))
 
 var nodeTpl = template.Must(template.New("node").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Node.js 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
@@ -305,14 +303,14 @@ var nodeTpl = template.Must(template.New("node").Funcs(tmplFuncs).Parse(`<!DOCTY
 <h1>Node.js 安装包</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <p class="sub">官方 nodejs.org/dist 的可移植归档（Linux/macOS 为 tar.xz，Windows 为 zip），解压后把 bin 目录加入 PATH 即可运行。</p>
-<div class="cfgbar">nvm：<code>export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
-n：<code>export N_NODE_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
-mise：<code>export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/node</code><br/>
-nvm-windows：<code>nvm node_mirror http://{{.Host}}/node/</code>（执行一次，写入 settings.txt）<br/>
+<div class="cfgbar">nvm：<code>export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/mirror/node</code><br/>
+n：<code>export N_NODE_MIRROR=http://user:pass@{{.Host}}/mirror/node</code><br/>
+mise：<code>export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/mirror/node</code><br/>
+nvm-windows：<code>nvm node_mirror http://{{.Host}}/mirror/node/</code>（执行一次，写入 settings.txt）<br/>
 四选一（用哪个工具执行对应一条）；nvm-windows / mise 的凭据限制与 fnm、Volta 情况见首页。</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 22 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/node/{{.Version}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td>{{if ne .Filename "SHASUMS256.txt"}}<form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="node"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form>{{end}}</td></tr>{{end}}
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/mirror/node/{{.Version}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td>{{if ne .Filename "SHASUMS256.txt"}}<form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="node"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form>{{end}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Node 安装包。请先执行 <code>pkgmirror download node &lt;版本&gt;</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -336,12 +334,12 @@ var golangTpl = template.Must(template.New("golang").Funcs(tmplFuncs).Parse(`<!D
 <h1>Go 安装包</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <p class="sub">官方 dl.google.com/go 的发行归档（unix 为 tar.gz，windows 为 zip），解压后把其中的 go 目录配进 PATH 即可运行。布局与官方一致，全部文件平铺。</p>
-<div class="cfgbar">mise：<code>export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
-asdf-golang：<code>export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
+<div class="cfgbar">mise：<code>export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/mirror/golang</code><br/>
+asdf-golang：<code>export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/mirror/golang</code><br/>
 gvm 与 golang.org/dl 辅助命令不支持自定义镜像，从下表手工下载解压。</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 1.23 或 linux" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/golang/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="golang"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/mirror/golang/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="golang"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Go 安装包。请先执行 <code>pkgmirror download golang &lt;版本&gt;</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -357,7 +355,7 @@ var gomodBrowseTpl = template.Must(template.New("gomodBrowse").Funcs(tmplFuncs).
 ` + navHead + `
 <h1>Go 模块列表</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
-<div class="cfgbar">Go 命令：<code>export GOPROXY=http://user:pass@{{.Host}}/goproxy GOSUMDB=off GOTOOLCHAIN=local</code>（完整接入说明见首页）</div>
+<div class="cfgbar">Go 命令：<code>export GOPROXY=http://user:pass@{{.Host}}/mirror/goproxy GOSUMDB=off GOTOOLCHAIN=local</code>（完整接入说明见首页）</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤模块路径，如 cobra" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>模块路径</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
 {{range .Rows}}<tr><td><a href="/browse/gomod/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="gomod"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
@@ -370,9 +368,9 @@ var gomodPkgTpl = template.Must(template.New("gomodPkg").Funcs(tmplFuncs).Parse(
 <h1>{{.Name}}</h1>
 <p class="sub">每个版本三件套：.mod（依赖声明）、.zip（模块源码）、.info（版本元数据）；均为 module proxy 协议数据，原样供内网 go 命令拉取。</p>
 <table><thead><tr><th>文件</th><th>大小</th></tr></thead><tbody>
-{{range .Files}}<tr><td><a href="/goproxy/{{$.Escaped}}/@v/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+{{range .Files}}<tr><td><a href="/mirror/goproxy/{{$.Escaped}}/@v/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
 </tbody></table>
-<p class="hint">module proxy 协议入口：<code>/goproxy/{{.Escaped}}/@v/list</code>（版本列表）与 <code>/goproxy/{{.Escaped}}/@latest</code>。</p>
+<p class="hint">module proxy 协议入口：<code>/mirror/goproxy/{{.Escaped}}/@v/list</code>（版本列表）与 <code>/mirror/goproxy/{{.Escaped}}/@latest</code>。</p>
 </div></body></html>`))
 
 var gomod404Tpl = template.Must(template.New("gomod404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>资源未同步 - pkgmirror</title>` + pageCSS + `</head><body>

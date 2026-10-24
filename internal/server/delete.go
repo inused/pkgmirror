@@ -141,12 +141,12 @@ func (s *Server) handleDeleteAPI(w http.ResponseWriter, r *http.Request) {
 
 // previewBack 是预览页"取消返回"的目标：各类型的列表页路径。
 var previewBack = map[string]string{
-	"pypi":   "/browse/",
-	"npm":    "/npm/",
+	"pypi":   "/browse/pypi/",
+	"npm":    "/browse/npm/",
 	"gomod":  "/browse/gomod/",
-	"python": "/python/",
-	"node":   "/node/",
-	"golang": "/golang/",
+	"python": "/browse/python/",
+	"node":   "/browse/node/",
+	"golang": "/browse/golang/",
 }
 
 // renderDeletePreview 渲染删除预览页（表单 dryRun 路径）。

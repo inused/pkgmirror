@@ -1,5 +1,6 @@
 # pkgmirror download 客户端配置示例
-# 拷贝为 client.toml 放在执行目录（自动探测），或用 --config 指定路径；文件不存在则忽略。
+# 拷贝为 client.toml 放在当前目录或二进制目录，依次探测；也可用 --config 指定路径。
+# 文件不存在时读取环境变量与默认值。
 
 # PyPI 索引地址
 # 优先级：--index-url 参数 > 本文件 > UV_INDEX_URL/PIP_INDEX_URL 环境变量 > pip.conf > 官方源
