@@ -1,12 +1,19 @@
 package client
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"pkgmirror/internal/manifest"
 	"pkgmirror/internal/pypi"
 )
 
@@ -95,5 +102,53 @@ func TestDetectReqFile(t *testing.T) {
 	// 既无 lockfileVersion 也无 dependencies
 	if _, err := detectReqFile(write("empty.json", `{"name":"x"}`)); err == nil {
 		t.Error("无法识别的 JSON 应报错")
+	}
+}
+
+// TestFetchAndRecordNode 验证 node/ 前缀文件的清单登记：Type/Tag 取自
+// 版本目录，源不提供哈希时（SHASUMS256.txt 本身）登记实际计算的哈希。
+func TestFetchAndRecordNode(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "abc123\n")
+	}))
+	defer ts.Close()
+
+	out := t.TempDir()
+	mf := newManifest("test")
+	client := ts.Client()
+
+	// SHASUMS256.txt：源无哈希，登记时应计算实际哈希
+	dest := filepath.Join(out, "node", "v22.14.0", "SHASUMS256.txt")
+	if err := fetchAndRecord(context.Background(), client, ts.URL+"/v22.14.0/SHASUMS256.txt", dest, "", out, &mf); err != nil {
+		t.Fatal(err)
+	}
+	// 归档：按源提供的哈希校验并登记
+	arch := filepath.Join(out, "node", "v22.14.0", "node-v22.14.0-linux-x64.tar.xz")
+	sum := sha256.Sum256([]byte("abc123\n"))
+	if err := fetchAndRecord(context.Background(), client, ts.URL+"/v22.14.0/node-v22.14.0-linux-x64.tar.xz", arch, hex.EncodeToString(sum[:]), out, &mf); err != nil {
+		t.Fatal(err)
+	}
+	// 重复登记同一路径去重
+	if err := fetchAndRecord(context.Background(), client, ts.URL+"/v22.14.0/SHASUMS256.txt", dest, "", out, &mf); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(mf.Files) != 2 {
+		t.Fatalf("清单应 2 条，实际 %d: %+v", len(mf.Files), mf.Files)
+	}
+	for _, f := range mf.Files {
+		if f.Type != "node" || f.Tag != "v22.14.0" {
+			t.Fatalf("node 条目 Type/Tag 错误: %+v", f)
+		}
+		if f.SHA256 == "" {
+			t.Fatalf("node 条目缺哈希: %+v", f)
+		}
+	}
+	// 清单可被 manifest.Load 接受（契约校验通过）
+	if err := manifest.Save(out, mf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Load(out); err != nil {
+		t.Fatalf("清单应通过契约校验: %v", err)
 	}
 }

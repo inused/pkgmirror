@@ -1,5 +1,6 @@
 // Package server 实现镜像服务端：PEP 503 simple 索引、CPython 安装包分发、
-// 浏览页面与上传接口。数据即 root 下的文件目录，无任何索引中间件。
+// npm registry 协议、Node dist 目录分发与浏览页面。数据即 root 下的文件
+// 目录，无任何索引中间件。
 package server
 
 import (
@@ -23,6 +24,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"pkgmirror/internal/node"
 	"pkgmirror/internal/npm"
 	"pkgmirror/internal/paths"
 	"pkgmirror/internal/pypi"
@@ -38,8 +40,7 @@ var ufuzzyJS []byte
 type Config struct {
 	// Listen 是监听地址，默认 ":19999"。
 	Listen string `toml:"listen"`
-	// Root 是数据根目录，pypi/ 与 python/ 的父目录（每个子目录是一种镜像
-	// 类型，扩展新镜像时平铺新增，如 node/），默认 "./data"。
+	// Root 是数据根目录，每种镜像类型占一个子目录，默认 "./data"。
 	Root string `toml:"root"`
 	// Users 是 Basic auth 用户表；空表表示不启用认证（启动时警告）。
 	Users map[string]string `toml:"users"`
@@ -99,6 +100,9 @@ var fileRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 // tagRe 是 python-build-standalone 构建标签（8 位日期）。
 var tagRe = regexp.MustCompile(`^[0-9]{8}$`)
 
+// nodeVerRe 是 node 镜像的版本目录名（与官方 nodejs.org/dist 目录一致，v 前缀三段版本）。
+var nodeVerRe = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
 // Server 持有服务端配置并实现全部路由。
 type Server struct {
 	cfg Config
@@ -125,6 +129,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/python/", s.handlePython)
 	mux.HandleFunc("/npm", s.handleNpm)
 	mux.HandleFunc("/npm/", s.handleNpm)
+	mux.HandleFunc("/node", s.handleNode)
+	mux.HandleFunc("/node/", s.handleNode)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
@@ -175,7 +181,7 @@ func logAccess(r *http.Request, event string, status int, size int64) {
 //
 //	@return error 监听或服务过程中的错误。
 func (s *Server) ListenAndServe() error {
-	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python"), filepath.Join(s.cfg.Root, "npm")} {
+	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python"), filepath.Join(s.cfg.Root, "npm"), filepath.Join(s.cfg.Root, "node")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("创建数据目录 %s 失败: %w", d, err)
 		}
@@ -221,8 +227,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	pkgs, _ := s.listPackages()
 	tags, _ := s.listPythonTags()
 	npmPkgs, _ := s.listNpmPackages()
+	nodeVers, _ := s.listNodeVersions()
 	// Host 取请求头，页面用它生成可直接复制的接入地址
-	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "NpmPackages": len(npmPkgs), "Host": r.Host})
+	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "NpmPackages": len(npmPkgs), "NodeVersions": len(nodeVers), "Host": r.Host})
 }
 
 // handleSimpleRoot 渲染 PEP 503 根索引（全部包名 anchor 列表）。
@@ -481,6 +488,85 @@ func (s *Server) handlePythonBrowse(w http.ResponseWriter, r *http.Request) {
 	render(w, pythonTpl, map[string]any{"Rows": rows, "Host": r.Host})
 }
 
+// handleNode 提供 Node 发行版分发：/node/ 与 /node/{vX.Y.Z}/ 为浏览页，
+// /node/{vX.Y.Z}/{file} 为文件下载（含 SHASUMS256.txt）。
+//
+// 目录布局与官方 nodejs.org/dist 一致，nvm/nvm-windows/n/mise 等版本管理器
+// 把镜像变量指向 /node 即可直接安装。文件不存在时返回 404 + HTML 提示页。
+func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/node/"), "/")
+	if rest == "" || !strings.Contains(rest, "/") {
+		s.handleNodeBrowse(w, r)
+		return
+	}
+	version, filename, _ := strings.Cut(rest, "/")
+	if !nodeVerRe.MatchString(version) || !fileRe.MatchString(filename) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.cfg.Root, "node", version, filename)
+	info, err := os.Stat(path)
+	if err != nil {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		renderBody(w, node404Tpl, map[string]any{"Path": r.URL.Path})
+		return
+	}
+	logAccess(r, "下载", http.StatusOK, info.Size())
+	http.ServeFile(w, r, path)
+}
+
+// listNodeVersions 列出 node/ 下全部版本目录（按 semver 降序）。
+//
+//	@return []string 版本目录名列表。
+//	@return error 目录读取失败时的错误。
+func (s *Server) listNodeVersions() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "node"))
+	if err != nil {
+		return nil, err
+	}
+	var vers []string
+	for _, e := range entries {
+		if e.IsDir() && nodeVerRe.MatchString(e.Name()) {
+			vers = append(vers, e.Name())
+		}
+	}
+	sort.Slice(vers, func(i, j int) bool { return node.CompareVersion(vers[i], vers[j]) > 0 })
+	return vers, nil
+}
+
+// handleNodeBrowse 渲染 Node 安装包浏览页（全部版本平铺）。
+func (s *Server) handleNodeBrowse(w http.ResponseWriter, r *http.Request) {
+	type row struct {
+		Version  string
+		Filename string
+		Size     int64
+	}
+	var rows []row
+	vers, err := s.listNodeVersions()
+	if err == nil {
+		for _, ver := range vers {
+			entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "node", ver))
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") {
+					continue
+				}
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				rows = append(rows, row{Version: ver, Filename: e.Name(), Size: info.Size()})
+			}
+		}
+	}
+	render(w, nodeTpl, map[string]any{"Rows": rows, "Host": r.Host})
+}
+
 // handleNpm 提供 npm registry 协议：/npm/ 为浏览页，/npm/{name} 返回
 // packument（tarball 地址重写为本镜像），/npm/{name}/-/{file} 返回 tarball。
 //
@@ -733,10 +819,10 @@ type uploadResult struct {
 
 // handleUploadAPI 处理上传（客户端与网页共用）。
 //
-// multipart 表单字段：type（pypi|python）、name（pypi 包名，网页上传可留空，
-// 服务端从文件名首段解析并规范化）、tag（python 构建标签）、sha256（期望哈希，
-// 可选）、file（文件本体）。落盘前校验期望哈希；目标已存在且哈希一致时幂等跳过，
-// 不一致时返回 409 拒绝覆盖。写入采用 .part 临时文件 + rename 原子落盘。
+// multipart 表单字段：type（pypi|python|npm|node）、name（pypi/npm 包名）、
+// tag（python 构建标签或 node 版本号）、sha256（期望哈希，可选）、file（文件
+// 本体）。落盘前校验期望哈希；目标已存在且哈希一致时幂等跳过，不一致时返回
+// 409 拒绝覆盖。写入采用 .part 临时文件 + rename 原子落盘。
 func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
@@ -803,8 +889,14 @@ func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dest = filepath.Join("npm", filepath.FromSlash(name), filename)
+	case "node":
+		if !nodeVerRe.MatchString(tag) {
+			http.Error(w, "node 上传的 tag 必须是 v 开头的三段版本（如 v22.14.0）", http.StatusBadRequest)
+			return
+		}
+		dest = filepath.Join("node", tag, filename)
 	default:
-		http.Error(w, "type 必须是 pypi、python 或 npm", http.StatusBadRequest)
+		http.Error(w, "type 必须是 pypi、python、npm 或 node", http.StatusBadRequest)
 		return
 	}
 

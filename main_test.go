@@ -40,8 +40,8 @@ func TestDownloadFlagAliases(t *testing.T) {
 	}
 }
 
-// TestDownloadFlagsInterspersed 验证选项写在位置参数前后均被解析（pflag
-// interspersed 默认开启，替代原先的自写参数重排），位置参数顺序保留。
+// TestDownloadFlagsInterspersed 验证 pflag 支持交错解析选项与位置参数，
+// 并保留位置参数的顺序。
 func TestDownloadFlagsInterspersed(t *testing.T) {
 	f := newDownloadFlags("python")
 	all := f.fs.Bool("all", false, "")
@@ -52,6 +52,18 @@ func TestDownloadFlagsInterspersed(t *testing.T) {
 	if args := f.fs.Args(); !reflect.DeepEqual(args, []string{"3.12", "3.13.1"}) {
 		t.Errorf("位置参数应保持原顺序，实际 %v", args)
 	}
+}
+
+// TestDownloadNodeLtsExclusive 验证 --lts 与版本参数互斥、两者全缺时报错，
+// 校验发生在任何网络请求之前。
+func TestDownloadNodeLtsExclusive(t *testing.T) {
+	if err := runDownloadNode([]string{"22", "--lts"}); err == nil {
+		t.Error("版本与 --lts 同时给出应报错")
+	}
+	if err := runDownloadNode([]string{}); err == nil {
+		t.Error("无目标应报错")
+	}
+	// 合法输入（如 "22"）会走到真实下载，不在单测中触网，行为由冒烟覆盖
 }
 
 // TestDownloadLogsRedactCredentials 验证下载启动日志隐藏源地址和代理凭据。

@@ -6,6 +6,7 @@
 //	pkgmirror server  [--config server.toml]
 //	pkgmirror download python 3.12 [3.12.4 ...] [--platform linux] [--arch x86_64]
 //	pkgmirror download pypi --python 3.12 包名==版本... [-r FILE] [-o 目录]
+//	pkgmirror download node 22 [--lts] [--dist-url URL] [-o 目录]
 //	pkgmirror upload --server http://user:pass@host:port <目录>
 package main
 
@@ -19,6 +20,7 @@ import (
 	flag "github.com/spf13/pflag"
 
 	"pkgmirror/internal/client"
+	"pkgmirror/internal/node"
 	"pkgmirror/internal/paths"
 	"pkgmirror/internal/server"
 )
@@ -55,7 +57,7 @@ func main() {
 
 // usage 打印顶层帮助：子命令一览与整体使用流程。
 func usage() {
-	fmt.Print(`pkgmirror ` + Version + ` - 离线包镜像工具（Python / npm）
+	fmt.Print(`pkgmirror ` + Version + ` - 离线包镜像工具（Python / Node.js）
 
 用法:
   pkgmirror <server|download|upload> [参数]
@@ -63,7 +65,7 @@ func usage() {
 
 子命令:
   server    启动镜像服务端，长期运行。
-            内网机器从它这里装 Python，以及 pip、npm 的包
+            内网机器从它这里装 Python / Node，以及 pip、npm 的包
   download  在外网机器上按需下载，产出目录拷回内网后用 upload 上传
   upload    把 download 产出的目录上传到服务端
 
@@ -71,6 +73,7 @@ func usage() {
   1. 外网机下载（按需选类型执行）:
      pkgmirror download python 3.12                  下载 Python 安装包
      pkgmirror download pypi --python 3.12 six       下载 PyPI 包
+     pkgmirror download node 22                      下载 Node 安装包
      pkgmirror download npm lodash                   下载 npm 包
   2. pkgmirror upload --server http://user:pass@host:port downloads
   3. 内网机器按服务端首页给出的配置接入（配一次即可），
@@ -83,7 +86,7 @@ func usage() {
 // 因此这里只概述能力并指明语法所在层级，避免帮助与行为不符。
 func usageDownload() {
 	fmt.Print(`用法:
-  pkgmirror download <python|pypi|npm> [参数] [选项]
+  pkgmirror download <python|pypi|node|npm> [参数] [选项]
   对每个类型加 -h 查看它的参数和选项
 
 下载类型:
@@ -94,6 +97,9 @@ func usageDownload() {
           包名直接写在命令后面（如 six 或 six==1.17.0）；
           只写包名时自动选兼容目标 Python 的最新版；
           全部写成 包名==版本 时直接下载清单中的版本，无需 uv
+  node    下载 Node.js 官方压缩包，内网解压配好 PATH 即可用，
+          版本管理器也能从镜像装。版本直接写在命令后面（如 22 或 22.11.0）；
+          --lts 下载当前最新 LTS
   npm     下载 npm 包，自动带上全部依赖（@scope/ 开头的包也支持）。
           包名直接写在命令后面（如 lodash 或 lodash@^4）；
           -r 可直接给 package.json 或现成的 package-lock.json
@@ -102,6 +108,7 @@ func usageDownload() {
   --proxy URL           HTTP 代理；不指定时用 HTTP_PROXY / HTTPS_PROXY 环境变量
   -i, --index-url URL   PyPI 索引地址（pypi 层）；
                         也可用 UV_INDEX_URL / PIP_INDEX_URL 环境变量或 pip.conf
+  --dist-url URL        Node 下载源地址（或 NODE_DIST_URL 环境变量）
   -R, --registry URL    npm registry 地址（npm 层；或 NPM_CONFIG_REGISTRY）
   --github-prefix P     GitHub 反代前缀（CPython 安装包与 uv 元数据托管在 GitHub）
   -c, --config FILE     客户端配置文件，
@@ -150,6 +157,36 @@ func usageDownloadNpm() {
   pkgmirror download npm lodash@^4 @babel/core
   pkgmirror download npm -r /path/to/package-lock.json --platform windows
   pkgmirror download npm --node 18.20.1 express
+`)
+}
+
+// usageDownloadNode 打印 download node 层帮助。
+func usageDownloadNode() {
+	fmt.Print(`用法:
+  pkgmirror download node [版本]... [选项]
+
+下载 Node.js 官方发行版（nodejs.org/dist）的压缩包和官方校验文件 SHASUMS256.txt。
+内网解压后把 bin 目录加进 PATH 就能用；服务端按官方的目录结构存放，
+nvm / nvm-windows / n / mise 换个镜像地址就能直接装（接入配置见服务端首页）。
+
+参数与选项:
+  版本                 零个或多个，空格或逗号分隔。三种写法：
+                         22        取 22 的最新补丁版
+                         22.11     取 22.11 的最新补丁版
+                         22.11.0   就下这个版本
+  --lts                下载当前最新的 LTS 版本（与版本参数二选一）
+  -p, --platform LIST  按操作系统过滤：linux,darwin,windows；默认全部
+  --arch LIST          按架构过滤：x86_64,aarch64（amd64/arm64 是别名）；默认全部
+  --dist-url URL       下载源地址。默认依次取：client.toml、
+                       NODE_DIST_URL 环境变量、官方源（https://nodejs.org/dist）
+
+只下可移植压缩包（linux / macos 是 tar.xz，windows 是 zip），
+不下 msi / pkg 安装器、musl 变体和源码。文件按官方 SHASUMS256.txt 校验后才落盘。
+
+示例:
+  pkgmirror download node 22
+  pkgmirror download node --lts --platform linux
+  pkgmirror download node 20.18.2 22 --platform linux,darwin --arch x86_64
 `)
 }
 
@@ -269,12 +306,12 @@ func runServer(args []string) error {
 
 // runDownload 按镜像类型分发到对应下载命令。
 //
-//	@param args []string 子命令参数，首项为 python、pypi 或 npm。
+//	@param args []string 子命令参数，首项为 python、pypi、node 或 npm。
 //	@return error 选项解析或下载失败的原因。
 func runDownload(args []string) error {
 	if len(args) == 0 {
 		usageDownload()
-		return fmt.Errorf("请指定下载类型：python、pypi 或 npm")
+		return fmt.Errorf("请指定下载类型：python、pypi、npm 或 node")
 	}
 	// 允许在 download 一层直接求助
 	switch args[0] {
@@ -287,8 +324,10 @@ func runDownload(args []string) error {
 		return runDownloadPypi(args[1:])
 	case "npm":
 		return runDownloadNpm(args[1:])
+	case "node":
+		return runDownloadNode(args[1:])
 	default:
-		return fmt.Errorf("未知的下载类型 %q（应为 python、pypi 或 npm）", args[0])
+		return fmt.Errorf("未知的下载类型 %q（应为 python、pypi、npm 或 node）", args[0])
 	}
 }
 
@@ -299,6 +338,7 @@ type dlFlags struct {
 	archs        *string
 	indexURL     *string
 	registry     *string
+	distURL      *string
 	githubPrefix *string
 	proxy        *string
 	configFile   *string
@@ -320,6 +360,7 @@ func newDownloadFlags(name string) dlFlags {
 		archs:        fs.String("arch", "", "按架构过滤（x86_64/aarch64，别名 amd64/arm64），逗号分隔，默认全部"),
 		indexURL:     fs.StringP("index-url", "i", "", "PyPI 索引地址"),
 		registry:     fs.StringP("registry", "R", "", "npm registry 地址（download npm 使用）"),
+		distURL:      fs.String("dist-url", "", "Node.js dist 源根地址（download node 使用）"),
 		githubPrefix: fs.StringP("github-prefix", "g", "", "GitHub 反代前缀"),
 		proxy:        fs.StringP("proxy", "x", "", "HTTP 代理地址，如 http://127.0.0.1:7890"),
 		configFile:   fs.StringP("config", "c", paths.FindConfig("client.toml"), "客户端配置文件路径，不存在则跳过"),
@@ -342,6 +383,7 @@ func (f dlFlags) resolveCommon() (client.DownloadCommon, error) {
 		Archs:        splitList(*f.archs),
 		IndexURL:     client.ResolveIndexURL(*f.indexURL, cfg.IndexURL),
 		Registry:     client.ResolveRegistry(*f.registry, cfg.Registry),
+		DistURL:      client.ResolveNodeDistURL(*f.distURL, cfg.NodeDistURL),
 		GitHubPrefix: firstNonEmpty(*f.githubPrefix, cfg.GitHubPrefix, os.Getenv("GITHUB_PREFIX")),
 		Proxy:        firstNonEmpty(*f.proxy, cfg.Proxy),
 		OutDir:       *f.outDir,
@@ -381,6 +423,55 @@ func runDownloadNpm(args []string) error {
 	}
 	log.Printf("npm registry: %s，目标 node: %s，代理: %s", redact.URL(opts.Registry), nodeDesc, proxyDesc(opts.Proxy))
 	return client.RunDownloadNpm(opts)
+}
+
+// runDownloadNode 执行 download node 子命令（位置参数为版本列表）。
+//
+//	@param args []string 子命令参数（已去掉资源类型）。
+//	@return error 选项解析或下载失败的原因。
+func runDownloadNode(args []string) error {
+	f := newDownloadFlags("node")
+	f.fs.Usage = usageDownloadNode
+	lts := f.fs.Bool("lts", false, "追加下载当前最新 LTS 版本")
+	f.fs.Parse(args)
+	common, err := f.resolveCommon()
+	if err != nil {
+		return err
+	}
+	opts := client.DownloadNodeOptions{DownloadCommon: common, LTS: *lts}
+	for _, v := range f.fs.Args() {
+		for _, item := range splitList(v) {
+			spec, err := node.ParseSpec(item)
+			if err != nil {
+				return err
+			}
+			opts.Versions = append(opts.Versions, spec)
+		}
+	}
+	// 显式版本与最新 LTS 是两种下载目标，命令行要求二选一。
+	if len(opts.Versions) > 0 && *lts {
+		return fmt.Errorf("--lts 与版本参数互斥：要最新 LTS 单独用 --lts，要指定版本只写版本")
+	}
+	if len(opts.Versions) == 0 && !*lts {
+		return fmt.Errorf("请指定 Node 版本（如 22 或 22.11.0）或 --lts")
+	}
+	if opts.OutDir == "" {
+		opts.OutDir = "downloads"
+	}
+	client.PkgMirrorUAVersion = Version
+	log.Printf("Node dist 源: %s，目标: %s%s，代理: %s", redact.URL(opts.DistURL),
+		strings.Join(specStrings(opts.Versions), ","),
+		map[bool]string{true: " +lts", false: ""}[*lts], proxyDesc(opts.Proxy))
+	return client.RunDownloadNode(opts)
+}
+
+// specStrings 把版本目标列表转为描述串（日志用）。
+func specStrings(specs []node.Spec) []string {
+	out := make([]string, len(specs))
+	for i, s := range specs {
+		out[i] = s.String()
+	}
+	return out
 }
 
 // runDownloadPython 执行 download python 子命令（位置参数为版本列表）。

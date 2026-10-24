@@ -19,7 +19,7 @@ import (
 func newTestServer(t *testing.T, users map[string]string) (*Server, *httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	for _, d := range []string{"pypi", "python", "npm"} {
+	for _, d := range []string{"pypi", "python", "npm", "node"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -300,6 +300,77 @@ func TestNpmUploadAndServe(t *testing.T) {
 	}
 }
 
+// TestUploadNodeAndServe 覆盖 node 上传校验、dist 布局文件分发与 404 提示页。
+func TestUploadNodeAndServe(t *testing.T) {
+	_, ts, root := newTestServer(t, nil)
+	content := []byte("fake-node-archive")
+	sum := sha256.Sum256(content)
+
+	// tag 非法被拒
+	resp := postUpload(t, ts.URL, "", "", "node", "", "22.14.0", "", "node-v22.14.0-linux-x64.tar.xz", content)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法 tag 应 400，实际 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 正常上传归档与 SHASUMS256.txt
+	for _, f := range []struct{ name, tag string }{
+		{"node-v22.14.0-linux-x64.tar.xz", "v22.14.0"},
+		{"SHASUMS256.txt", "v22.14.0"},
+	} {
+		resp := postUpload(t, ts.URL, "", "", "node", "", f.tag, hex.EncodeToString(sum[:]), f.name, content)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("上传 %s 应 200，实际 %d", f.name, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// 文件按 dist 布局可下载，落盘目录与官方一致
+	page, err := http.Get(ts.URL + "/node/v22.14.0/node-v22.14.0-linux-x64.tar.xz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
+		t.Fatalf("归档下载失败: %d", page.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(root, "node", "v22.14.0", "SHASUMS256.txt")); err != nil {
+		t.Fatal("SHASUMS256.txt 未按 dist 布局落盘")
+	}
+
+	// 未同步文件返回 404 + 提示页；非法版本目录与非法文件名 404
+	page, _ = http.Get(ts.URL + "/node/v22.11.0/node-v22.11.0-win-x64.zip")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "pkgmirror download node") {
+		t.Fatalf("未同步文件应 404 + 提示页，实际 %d", page.StatusCode)
+	}
+	for _, bad := range []string{"/node/22.14.0/x", "/node/v22.14.0/a%2Fb", "/node/"} {
+		page, _ = http.Get(ts.URL + bad)
+		page.Body.Close()
+		if bad != "/node/" && page.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s 应 404，实际 %d", bad, page.StatusCode)
+		}
+	}
+
+	// 浏览页列出已同步版本
+	page, _ = http.Get(ts.URL + "/node/")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	if !strings.Contains(string(body), "node-v22.14.0-linux-x64.tar.xz") {
+		t.Fatal("浏览页应列出已上传的归档")
+	}
+
+	// 首页统计含 Node 版本数
+	page, _ = http.Get(ts.URL + "/")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	if !strings.Contains(string(body), "个 Node 版本") || !strings.Contains(string(body), "NVM_NODEJS_ORG_MIRROR") {
+		t.Fatal("首页应含 Node 版本统计与版本管理器接入配置")
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	// X-Forwarded-For 多段：取最左一段（原始客户端），去除空白
@@ -394,7 +465,7 @@ func TestNavGroupAndFilter(t *testing.T) {
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
 	html := string(body)
-	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>`)
+	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>`)
 	if pyPos < 0 || strings.Contains(html, `<b>pkgmirror</b>`) {
 		t.Errorf("导航分组结构不符:\n%s", html)
 	}
@@ -470,7 +541,7 @@ func TestLoadConfig(t *testing.T) {
 // 内联匹配脚本（匹配逻辑由浏览器执行，这里只验证注入完整）。
 func TestNavCurrentScript(t *testing.T) {
 	_, ts, _ := newTestServer(t, nil)
-	pages := []string{"/", "/python/", "/browse/", "/npm/", "/upload"}
+	pages := []string{"/", "/python/", "/browse/", "/npm/", "/node/", "/upload"}
 	for _, p := range pages {
 		resp, err := http.Get(ts.URL + p)
 		if err != nil {

@@ -102,10 +102,9 @@ const navCurScript = `<script>
 
 // navHead 是人用页面的容器开头与导航条，各页面以 </div></body></html> 收尾。
 // 导航按编程语言分组：语言本体在前、包仓库在后；组名（b）与独立入口
-// （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔；
-// 后续扩展（如 node 二进制）在 Node.js 组内加链接即可。
+// （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔。
 const navHead = `<div class="container">
-<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>
+<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>
 ` + navCurScript
 
 // copyScript 是配置块的复制按钮脚本；浏览器不支持时退化为提示手动复制。
@@ -174,6 +173,7 @@ var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOC
 <div class="stat"><b>{{.Tags}}</b><span>个 Python 构建标签</span></div>
 <div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
 <div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
+<div class="stat"><b>{{.NodeVersions}}</b><span>个 Node 版本</span></div>
 </div>
 <div class="cfg">
 <h2>uv 接入（环境变量，把 user:pass 换成本服务账号）</h2>
@@ -193,6 +193,18 @@ export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</pre>
 <button class="copy" onclick="copyCmd('c3',this)">复制</button>
 <p class="hint">BASE64(user:pass) 生成方式：<code>echo -n user:pass | base64</code>；
 yarn berry 用 <code>.yarnrc.yml</code> 的 <code>npmRegistryServer</code> 与 <code>npmAuthIdent</code>，取值相同。</p>
+</div>
+<div class="cfg">
+<h2>Node 版本管理器接入（四选一：用哪个工具就执行带它名字的那一行）</h2>
+<pre id="c4">export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/node   # nvm（macOS/Linux）
+export N_NODE_MIRROR=http://user:pass@{{.Host}}/node           # n
+export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/node    # mise
+nvm node_mirror http://{{.Host}}/node/                         # nvm-windows（执行一次，写入 settings.txt）</pre>
+<button class="copy" onclick="copyCmd('c4',this)">复制</button>
+<p class="hint">四条只需执行与自己工具对应的一条，全部执行也无害（各工具只认自己的变量）；
+换源后照常 <code>nvm install 22</code> / <code>n 22</code> / <code>mise use -g node@22</code>。
+nvm-windows 与 mise 对 URL 内嵌凭据的支持未确认，401 时改匿名部署或走安装包页手工下载；
+fnm 同布局可用 <code>FNM_NODE_DIST_MIRROR</code>；Volta 不支持自定义镜像。</p>
 </div>
 </div>
 ` + copyScript + `
@@ -218,9 +230,10 @@ var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Pars
 </tbody></table>
 </div></body></html>`))
 
-var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Python 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
+var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Python 安装包（python-build-standalone 构建）- pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Python 安装包</h1>
+<p class="sub">python-build-standalone 构建：Astral 以 CPython 官方源码构建的便携归档，uv 的 <code>uv python install</code> 即从此下载（mise、bazel 等共用），<b>不是</b> python.org 官方安装器。归档可复制到同系统（OS+架构）的机器，解压配 PATH 直接使用：Windows 无 pip.exe（用 <code>python -m pip</code>，建议预装 VC++ 运行库），Linux 需 glibc ≥ 2.17。</p>
 <div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</code></div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 3.12 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
 <table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
@@ -257,6 +270,29 @@ var npmPkgTpl = template.Must(template.New("npmPkg").Funcs(tmplFuncs).Parse(`<!D
 <p class="hint">registry 协议入口（供 npm/pnpm/yarn）：<code>/npm/{{.Name}}</code></p>
 </div></body></html>`))
 
+var nodeTpl = template.Must(template.New("node").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Node.js 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>Node.js 安装包</h1>
+<p class="sub">官方 nodejs.org/dist 的可移植归档（Linux/macOS 为 tar.xz，Windows 为 zip），解压后把 bin 目录加入 PATH 即可运行。</p>
+<div class="cfgbar">nvm：<code>export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
+n：<code>export N_NODE_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
+mise：<code>export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/node</code><br/>
+nvm-windows：<code>nvm node_mirror http://{{.Host}}/node/</code>（执行一次，写入 settings.txt）<br/>
+四选一（用哪个工具执行对应一条）；nvm-windows / mise 的凭据限制与 fnm、Volta 情况见首页。</div>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 22 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/node/{{.Version}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无 Node 安装包。请先执行 <code>pkgmirror download node &lt;版本&gt;</code> 下载并上传。</p>{{end}}
+</div>` + filterScript + `
+</body></html>`))
+
+var node404Tpl = template.Must(template.New("node404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>文件未同步</h1>
+<p>请求的 Node 发行文件 <code>{{.Path}}</code> 不在本镜像中。</p>
+<p>请先执行 <code>pkgmirror download node &lt;版本&gt;</code> 下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
+</div></body></html>`))
+
 var npm404Tpl = template.Must(template.New("npm404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>文件未同步</h1>
@@ -269,14 +305,14 @@ var uploadTpl = template.Must(template.New("upload").Funcs(tmplFuncs).Parse(`<!D
 <h1>上传文件</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <form method="post" action="/api/upload" enctype="multipart/form-data">
-<label for="f">文件（wheel / sdist / Python 安装包 / npm tgz）</label>
+<label for="f">文件（wheel / sdist / Python 安装包 / npm tgz / Node 归档）</label>
 <input type="file" name="file" id="f" required>
 <label for="t">类型</label>
-<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option><option value="npm">npm 包（tgz / packument.json）</option></select>
+<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option><option value="npm">npm 包（tgz / packument.json）</option><option value="node">node 安装包（tar.xz / zip / SHASUMS256.txt）</option></select>
 <label for="n">包名（pypi 留空自动解析；npm 必填，scoped 含 @scope/ 前缀）</label>
 <input type="text" name="name" id="n" placeholder="pypi 可留空；npm 必填">
-<label for="g">构建标签（python）</label>
-<input type="text" name="tag" id="g" placeholder="8 位日期，如 20261021">
+<label for="g">构建标签（python）或版本号（node）</label>
+<input type="text" name="tag" id="g" placeholder="python 填 8 位日期（如 20261021）；node 填版本（如 v22.14.0）">
 <button type="submit">上传</button>
 </form>
 </div></body></html>`))

@@ -34,6 +34,9 @@ type DownloadCommon struct {
 	IndexURL string
 	// Registry 是 npm registry 地址（已解析配置文件与环境变量，仅 download npm 使用）。
 	Registry string
+	// DistURL 是 Node.js dist 根地址（已解析配置文件与环境变量，仅 download node
+	// 使用），空表示未配置（RunDownloadNode 回退官方源）。
+	DistURL string
 	// GitHubPrefix 是 GitHub 反代前缀，拼在完整 URL 之前，空为直连。
 	GitHubPrefix string
 	// Proxy 是 HTTP 代理地址（如 http://127.0.0.1:7890），空表示走
@@ -261,6 +264,7 @@ func RunDownloadPython(opts DownloadPythonOptions) error {
 // fetchAndRecord 下载一个文件并在清单中登记。
 //
 // 目标已存在且哈希一致时跳过下载（增量重跑），清单条目按 path 去重后补写。
+// sha 为空表示源不提供哈希（下载不校验，登记时计算实际哈希）。
 //
 //	@param ctx context.Context 上下文。
 //	@param client *http.Client HTTP 客户端。
@@ -283,10 +287,23 @@ func fetchAndRecord(ctx context.Context, client *http.Client, url, dest, sha, ou
 		}
 	}
 	entry := manifest.File{Filename: filepath.Base(dest), Path: rel, SHA256: sha, Size: fileSize(dest)}
-	if strings.HasPrefix(rel, "python/") {
+	// 源不提供哈希时（如 node 的 SHASUMS256.txt 本身）计算实际哈希登记，
+	// 清单条目缺哈希会被 manifest.Load 拒绝
+	if sha == "" {
+		sum, err := fileSHA256(dest)
+		if err != nil {
+			return err
+		}
+		entry.SHA256 = sum
+	}
+	switch {
+	case strings.HasPrefix(rel, "python/"):
 		entry.Type = "python"
 		entry.Tag = filepath.Base(filepath.Dir(dest))
-	} else {
+	case strings.HasPrefix(rel, "node/"):
+		entry.Type = "node"
+		entry.Tag = filepath.Base(filepath.Dir(dest))
+	default:
 		entry.Type = "pypi"
 		entry.Name = filepath.Base(filepath.Dir(dest))
 	}
