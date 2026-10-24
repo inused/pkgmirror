@@ -1,6 +1,12 @@
 package pypi
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -185,5 +191,66 @@ func TestWheelMatchesPlatformArch(t *testing.T) {
 			t.Errorf("WheelMatchesPlatformArch(%q, %v, %v) = %v, 期望 %v",
 				c.filename, c.platforms, c.archs, got, c.want)
 		}
+	}
+}
+
+// TestDepNamesFromArchive 覆盖 wheel / sdist tar / sdist zip 三种元数据
+// 形态与无元数据的空结果。
+func TestDepNamesFromArchive(t *testing.T) {
+	meta := "Metadata-Version: 2.1\nName: req\nRequires-Dist: idna (>=2.5,<4)\nRequires-Dist: urllib3<3\nRequires-Dist: pysocks (!=1.5.7) ; extra == 'socks'\n\n正文区不解析\n"
+	dir := t.TempDir()
+
+	// wheel：zip 内 *.dist-info/METADATA
+	var wz bytes.Buffer
+	zw := zip.NewWriter(&wz)
+	fw, _ := zw.Create("req-2.0.dist-info/METADATA")
+	fw.Write([]byte(meta))
+	zw.Close()
+	whl := filepath.Join(dir, "req-2.0-py3-none-any.whl")
+	os.WriteFile(whl, wz.Bytes(), 0o644)
+
+	// sdist tar.gz：内层目录 PKG-INFO
+	var tg bytes.Buffer
+	gzw := gzip.NewWriter(&tg)
+	tw := tar.NewWriter(gzw)
+	tw.WriteHeader(&tar.Header{Name: "req-2.0/PKG-INFO", Mode: 0o644, Size: int64(len(meta))})
+	tw.Write([]byte(meta))
+	tw.Close()
+	gzw.Close()
+	tgz := filepath.Join(dir, "req-2.0.tar.gz")
+	os.WriteFile(tgz, tg.Bytes(), 0o644)
+
+	// sdist zip：根 PKG-INFO（无内层目录）
+	var sz bytes.Buffer
+	zs := zip.NewWriter(&sz)
+	f2, _ := zs.Create("req-2.0/PKG-INFO")
+	f2.Write([]byte(meta))
+	zs.Close()
+	szip := filepath.Join(dir, "req-2.0.zip")
+	os.WriteFile(szip, sz.Bytes(), 0o644)
+
+	want := []string{"idna", "pysocks", "urllib3"}
+	for _, path := range []string{whl, tgz, szip} {
+		got, err := DepNamesFromArchive(path)
+		if err != nil {
+			t.Fatalf("%s: 解析失败: %v", path, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: 依赖名 = %v, want %v", path, got, want)
+		}
+	}
+
+	// 无元数据条目的 wheel 与未知扩展名 → 空
+	var bare bytes.Buffer
+	bw := zip.NewWriter(&bare)
+	bw.Create("req-2.0.dist-info/WHEEL")
+	bw.Close()
+	bareWhl := filepath.Join(dir, "bare-1.0-py3-none-any.whl")
+	os.WriteFile(bareWhl, bare.Bytes(), 0o644)
+	if got, _ := DepNamesFromArchive(bareWhl); len(got) != 0 {
+		t.Errorf("无 METADATA 的 wheel 应无依赖, 得到 %v", got)
+	}
+	if got, _ := DepNamesFromArchive(filepath.Join(dir, "x.txt")); got != nil {
+		t.Errorf("未知扩展名应返回空, 得到 %v", got)
 	}
 }

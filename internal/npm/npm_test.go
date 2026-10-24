@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -255,4 +256,32 @@ func TestEscapeName(t *testing.T) {
 func ExamplePackumentURL() {
 	fmt.Println(PackumentURL("https://registry.npmjs.org/", "@scope/pkg"))
 	// Output: https://registry.npmjs.org/@scope%2Fpkg
+}
+
+// TestDepNamesForTarballs 覆盖依赖并集（dependencies ∪ optionalDependencies）
+// 及按已镜像 tarball 筛选版本。
+func TestDepNamesForTarballs(t *testing.T) {
+	body := []byte(`{"versions":{
+		"1.0.0":{"dist":{"tarball":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"},"dependencies":{"b":"^1.0.0"}},
+		"2.0.0":{"dist":{"tarball":"https://registry.npmjs.org/a/-/a-2.0.0.tgz"},"dependencies":{"c":"^2.0.0"},"optionalDependencies":{"d":"^2.0.0"}},
+		"3.0.0":{"dist":{"tarball":"https://registry.npmjs.org/a/-/a-3.0.0.tgz"},"dependencies":{"e":"^3.0.0"}}
+	}}`)
+	mirrored := map[string]bool{"a-1.0.0.tgz": true, "a-2.0.0.tgz": true}
+	got, err := DepNamesForTarballs(body, func(f string) bool { return mirrored[f] })
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	// 3.0.0 未镜像：e 不计入；2.0.0 的 optional d 计入
+	want := []string{"b", "c", "d"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("依赖名 = %v, want %v", got, want)
+	}
+	// 全部版本未镜像 → 空
+	if got, _ := DepNamesForTarballs(body, func(string) bool { return false }); len(got) != 0 {
+		t.Errorf("无已镜像版本应返回空, 得到 %v", got)
+	}
+	// 非法 JSON → 错误
+	if _, err := DepNamesForTarballs([]byte("{"), func(string) bool { return true }); err == nil {
+		t.Error("非法 JSON 应报错")
+	}
 }

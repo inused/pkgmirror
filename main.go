@@ -1,5 +1,5 @@
-// pkgmirror 是 uv/pip 离线镜像工具：server 子命令提供镜像服务，
-// download 与 upload 子命令完成按需下载与上传。
+// pkgmirror 是离线包镜像工具（Python / Node.js / Go）：server 子命令提供镜像服务，
+// download、upload、delete 子命令分别下载、上传和删除镜像资源。
 //
 // 用法：
 //
@@ -44,6 +44,8 @@ func main() {
 		err = runDownload(os.Args[2:])
 	case "upload":
 		err = runUpload(os.Args[2:])
+	case "delete":
+		err = runDelete(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -61,7 +63,7 @@ func usage() {
 	fmt.Print(`pkgmirror ` + Version + ` - 离线包镜像工具（Python / Node.js / Go）
 
 用法:
-  pkgmirror <server|download|upload> [参数]
+  pkgmirror <server|download|upload|delete> [参数]
   任何一层都可以加 -h 查看这一层的用法
 
 子命令:
@@ -69,6 +71,7 @@ func usage() {
             内网机器从它这里装 Python / Node / Go，以及 pip、npm、go 的包
   download  在外网机器上按需下载，产出目录拷回内网后用 upload 上传
   upload    把 download 产出的目录上传到服务端
+  delete    删除服务端上已镜像的内容，可以连不再有人用的依赖一起删
 
 整体流程:
   1. 外网机下载（按需选类型执行）:
@@ -82,9 +85,8 @@ func usage() {
 `)
 }
 
-// usageDownload 打印 download 层帮助：三种下载类型概览与公共能力指引。
-// 公共选项实际由 python/pypi/npm 层解析（download 层不直接接受），
-// 因此这里只概述能力并指明语法所在层级，避免帮助与行为不符。
+// usageDownload 打印 download 层帮助：下载类型概览与公共能力指引。
+// 选项由各类型子命令解析，此处列出名称和适用类型。
 func usageDownload() {
 	fmt.Print(`用法:
   pkgmirror download <python|pypi|node|npm|golang|gomod> [参数] [选项]
@@ -351,6 +353,47 @@ func usageUpload() {
                     端口以服务端配置为准，账号密码可以直接写在地址里
   --user NAME       Basic auth 用户名（地址里已带账号密码时可省略）
   --pass PASS       Basic auth 密码
+`)
+}
+
+// usageDelete 打印 delete 层帮助。
+func usageDelete() {
+	fmt.Print(`用法:
+  pkgmirror delete <pypi|npm|gomod> <包名|模块路径> [--deps] [选项]
+  pkgmirror delete <python|node|golang> <版本|归档文件名> [--deps] [选项]
+
+删除服务端上已镜像的内容。先打印要删的清单，确认后才执行（-y 跳过确认）。
+第一行删包和模块（按名字），第二行删安装包（按版本或单个归档文件名）。
+
+删除单位:
+  pypi 包名            整个包目录（全部版本的文件）
+  npm 包名             整个包目录（带 @scope/ 前缀的要写全）
+  gomod 模块路径       整个模块（@v 下全部版本的三个文件）
+  python 版本/文件名   按版本删全部平台安装包（3.12.15 精确；3.12 匹配 3.12.*）；
+                       按文件名删单个归档及伴随 .sha256
+  node 版本/文件名     按版本删目录（v22.14.0 精确；v22 匹配 v22.*）；
+                       按文件名删单个归档（SHASUMS256.txt 在该版本归档
+                       删光时才一并删除，官方文件不改写）
+  golang 版本/文件名   按版本删全部平台归档（1.23.4 精确；1.23 匹配 go1.23.*）；
+                       按文件名删单个归档及伴随 .sha256
+
+  --deps               连带删除：pypi/npm/gomod 删掉目标后，只被它（直接或
+                       间接）依赖、镜像里没有别人在用的包一并删除（依赖关系
+                       从包内元数据实时推导）；安装包仅在按文件名删除时有效
+                       （扩展为整个版本组），按版本删除本身已是整组，会报错
+  -y, --yes            跳过确认直接删（写脚本用）
+
+  -s, --server URL     服务端地址，如 http://user:pass@host:port，
+                       账号密码可以直接写在地址里
+  --user NAME          Basic auth 用户名（地址里已带账号密码时可省略）
+  --pass PASS          Basic auth 密码
+
+示例:
+  pkgmirror delete pypi requests -s http://user:pass@host:19999
+  pkgmirror delete npm lodash --deps -s http://host:19999 --user user --pass pass
+  pkgmirror delete gomod github.com/spf13/cobra --deps -s http://host:19999
+  pkgmirror delete python 3.12 -y -s http://host:19999
+  pkgmirror delete node node-v22.14.0-linux-x64.tar.xz --deps -s http://host:19999
 `)
 }
 
@@ -721,6 +764,51 @@ func runUpload(args []string) error {
 	}
 	return client.RunUpload(client.UploadOptions{
 		Dir:    dir,
+		Server: *serverURL,
+		User:   *user,
+		Pass:   *pass,
+	})
+}
+
+// runDelete 执行删除子命令：解析类型与目标后交由客户端执行。
+//
+//	@param args []string 子命令参数（首项为镜像类型）。
+//	@return error 选项解析或删除失败的原因。
+func runDelete(args []string) error {
+	if len(args) == 0 {
+		usageDelete()
+		return fmt.Errorf("请指定删除类型：pypi、npm、gomod、python、node 或 golang")
+	}
+	typ := args[0]
+	if typ == "-h" || typ == "--help" || typ == "help" {
+		usageDelete()
+		return nil
+	}
+	switch typ {
+	case "pypi", "npm", "gomod", "python", "node", "golang":
+	default:
+		return fmt.Errorf("未知的删除类型 %q（应为 pypi、npm、gomod、python、node 或 golang）", typ)
+	}
+	fs := flag.NewFlagSet("delete "+typ, flag.ExitOnError)
+	fs.Usage = usageDelete
+	serverURL := fs.StringP("server", "s", "", "服务端地址，如 http://user:pass@host:port")
+	user := fs.String("user", "", "Basic auth 用户名")
+	pass := fs.String("pass", "", "Basic auth 密码")
+	deps := fs.Bool("deps", false, "级联删除依赖项（仅 pypi/npm/gomod）")
+	yes := fs.BoolP("yes", "y", false, "跳过确认直接删除")
+	fs.Parse(args[1:])
+	if fs.NArg() != 1 {
+		return fmt.Errorf("请指定一个删除目标（包名 / 模块路径 / 版本）；或加 -h 查看完整说明")
+	}
+	if *serverURL == "" {
+		return fmt.Errorf("必须用 --server 指定服务端地址，如 http://user:pass@host:port")
+	}
+	// 服务端校验 --deps：安装包按文件名删除时可用，按版本删除时拒绝。
+	return client.RunDelete(client.DeleteOptions{
+		Type:   typ,
+		Name:   fs.Arg(0),
+		Deps:   *deps,
+		Yes:    *yes,
 		Server: *serverURL,
 		User:   *user,
 		Pass:   *pass,

@@ -389,3 +389,56 @@ func VerifySRIFile(path, sri string) error {
 	}
 	return nil
 }
+
+// depPackument 包含按已镜像 tarball 提取依赖所需的 packument 字段。
+type depPackument struct {
+	Versions map[string]struct {
+		Dist struct {
+			Tarball string `json:"tarball"`
+		} `json:"dist"`
+		// Dependencies 与 OptionalDependencies 的键是依赖包名（完整名，
+		// scoped 含 @scope/ 前缀），值是 semver range（此处不关心）。
+		Dependencies         map[string]string `json:"dependencies"`
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
+	} `json:"versions"`
+}
+
+// DepNamesForTarballs 提取已镜像版本的依赖包名（级联删除建图用）。
+//
+// 对 dist.tarball 文件名命中 exists 的每个版本，取 dependencies ∪
+// optionalDependencies 的键并集，可选依赖也参与级联保留判断。
+// bundledDependencies 的内容位于父包 tarball 内。
+//
+//	@param body []byte packument 原始 JSON。
+//	@param exists func(string) bool 判断 tarball 文件名是否已镜像
+//	 （调用方传包目录内的 .tgz 文件名集合）。
+//	@return []string 排序去重后的依赖包名（scoped 含前缀，与镜像目录名一致）；
+//	 无已镜像版本或无依赖声明时为空。
+//	@return error packument 不是合法 JSON 时的错误。
+func DepNamesForTarballs(body []byte, exists func(string) bool) ([]string, error) {
+	var pj depPackument
+	if err := json.Unmarshal(body, &pj); err != nil {
+		return nil, fmt.Errorf("解析 packument 失败: %w", err)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range pj.Versions {
+		if !exists(fileNameOf(v.Dist.Tarball)) {
+			continue
+		}
+		for name := range v.Dependencies {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+		for name := range v.OptionalDependencies {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

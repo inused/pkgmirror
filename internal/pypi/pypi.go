@@ -3,13 +3,17 @@
 package pypi
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -364,4 +368,144 @@ func WheelMatchesPlatformArch(filename string, platforms, archs []string) bool {
 		}
 	}
 	return false
+}
+
+// DepNamesFromArchive 从发行文件提取声明的依赖包名（级联删除建图用）。
+//
+// 支持三种形态：wheel（.whl，读 zip 内 *.dist-info/METADATA 单条目）、
+// sdist tar 包（.tar.gz，顺序扫描取首条 PKG-INFO）、sdist zip（.zip）。
+// zip 经 central directory 定位、tar 扫到即停，均不解压全文件。带环境
+// marker 与 extras 的 Requires-Dist 全部计入（保守超集：边越多级联保留
+// 越多，宁可少删）。依赖名经 PEP 503 规范化，与镜像目录名一致。
+//
+//	@param path string 发行文件路径（.whl/.tar.gz/.zip）。
+//	@return []string 排序去重后的规范依赖包名；其他扩展名、无元数据或无依赖声明时为空。
+//	@return error 归档打开、解压、定位或打开元数据条目失败时的错误。
+func DepNamesFromArchive(path string) ([]string, error) {
+	switch {
+	case strings.HasSuffix(path, ".whl"):
+		return depNamesFromZip(path, ".dist-info/METADATA")
+	case strings.HasSuffix(path, ".tar.gz"):
+		return depNamesFromSdistTar(path)
+	case strings.HasSuffix(path, ".zip"):
+		return depNamesFromZip(path, "/PKG-INFO")
+	default:
+		return nil, nil
+	}
+}
+
+// depNamesFromZip 打开 zip 归档并读取名字以 suffix 结尾的首个条目。
+//
+// wheel 按 .dist-info/METADATA 后缀定位；sdist 按 /PKG-INFO 后缀定位，
+// 同时接受根目录下名为 PKG-INFO 的条目。
+//
+//	@param path string zip 文件路径。
+//	@param suffix string 目标条目名的结尾匹配（含斜杠）。
+//	@return []string 解析出的依赖包名。
+//	@return error 归档打开或条目读取失败时的错误。
+func depNamesFromZip(path, suffix string) ([]string, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		ok := strings.HasSuffix(f.Name, suffix)
+		// sdist 根 PKG-INFO（无斜杠）与内层 PKG-INFO 都接受
+		if !ok && (suffix == "/PKG-INFO" && f.Name == "PKG-INFO") {
+			ok = true
+		}
+		if !ok {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		out := parseRequiresDist(rc)
+		rc.Close()
+		return out, nil
+	}
+	return nil, nil
+}
+
+// depNamesFromSdistTar 顺序扫描 sdist tar.gz，读首条 PKG-INFO。
+//
+//	@param path string tar.gz 文件路径。
+//	@return []string 解析出的依赖包名。
+//	@return error 文件打开、解压或读取失败时的错误。
+func depNamesFromSdistTar(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if hdr.Name == "PKG-INFO" || strings.HasSuffix(hdr.Name, "/PKG-INFO") {
+			return parseRequiresDist(tr), nil
+		}
+	}
+}
+
+// parseRequiresDist 从 METADATA / PKG-INFO 文本提取 Requires-Dist 声明的
+// 依赖包名（PEP 503 规范化，排序去重）。
+//
+// 头部区以首个空行结束；Requires-Dist 值形如 "name (spec) ; marker" 或
+// "name spec"，包名取首个空白或版本比较符之前的部分。头部名按不区分
+// 大小写匹配（RFC 822 语义）。
+//
+//	@param r io.Reader 元数据文本。
+//	@return []string 规范依赖包名列表。
+func parseRequiresDist(r io.Reader) []string {
+	seen := map[string]bool{}
+	var out []string
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			break
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "Requires-Dist:") {
+			continue
+		}
+		name := depNameOf(fields[1])
+		if name == "" {
+			continue
+		}
+		name = NormalizeName(name)
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// depNameOf 从 Requires-Dist 的首字段剥离版本说明，得到裸包名。
+//
+// 兼容 "idna>=2.5"（无空格连写）、"idna (>=2.5,<4)"、'"weird name"' 等
+// 形式；取 '('、引号与全部版本比较符（=<>!~）之前的部分。
+//
+//	@param field string Requires-Dist 值的首个空白分隔字段。
+//	@return string 裸包名；剥离后为空时返回空串。
+func depNameOf(field string) string {
+	if i := strings.IndexAny(field, "(<>!=~\"'"); i >= 0 {
+		field = field[:i]
+	}
+	return strings.TrimSpace(field)
 }

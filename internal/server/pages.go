@@ -42,6 +42,8 @@ h1{margin:0 0 .4rem;font-size:1.5rem}
 nav{background:#fff;border:1px solid #e1e4e8;border-radius:8px;padding:.5rem .75rem;margin-bottom:1.5rem}
 nav a{color:#0969da;text-decoration:none;padding:.35rem .7rem;border-radius:6px;display:inline-block}
 nav a:hover{background:#eaf2fc}
+nav a.cur{background:#0969da;color:#fff}
+nav a.cur:hover{background:#0860c4;color:#fff}
 nav b{color:#57606a;font-size:.95rem;padding:.35rem .7rem;display:inline-block}
 nav .cut{border-left:1px solid #e1e4e8;margin-left:.55rem}
 table{background:#fff;border:1px solid #e1e4e8;border-radius:8px;border-collapse:separate;border-spacing:0;width:100%;margin:1rem 0}
@@ -72,17 +74,22 @@ button[type=submit]:hover{background:#1a7f37}
 .cfgbar code{font-size:.85rem}
 .filterbar{margin:0 0 1rem}
 .filterbar .hint{margin-left:.6rem}
-nav a.cur{background:#0969da;color:#fff}
+form.delform{display:inline;background:none;border:none;padding:0;margin:0}
+button.delbtn{background:#fff;border:1px solid #d0d7de;color:#cf222e;border-radius:6px;padding:.15rem .6rem;font-size:.82rem;margin:0;cursor:pointer}
+button.delbtn:hover{background:#cf222e;border-color:#cf222e;color:#fff}
+button.delmain{background:#cf222e;color:#fff;border:1px solid #cf222e;border-radius:6px;padding:.35rem 1rem;font-size:.9rem;margin:0 0 0 .8rem;vertical-align:middle;cursor:pointer}
+button.delmain:hover{background:#a40e26;border-color:#a40e26}
+a.cancelbtn{background:#fff;border:1px solid #d0d7de;color:#57606a;border-radius:6px;padding:.3rem .9rem;font-size:1rem;margin-left:.8rem;text-decoration:none;vertical-align:middle}
+a.cancelbtn:hover{background:#f6f8fa;color:#24292f}
 </style>`
 
 // navCurScript 高亮当前页对应的导航链接（cur 类）。
 //
 // 匹配规则：当前路径与各链接 href 统一补尾斜杠后做前缀比较，取最长的
 // 命中者（/browse/gomod/x 同时命中 /browse/ 与 /browse/gomod/，取长者）；
-// 首页仅在路径恰为 / 时命中。npm 包的人用浏览页是 /browse/npm/... 而
-// 导航入口 href 是 /npm/（registry 协议根），先做别名归一再匹配。
-// className 追加而非覆盖，保留上传链接的 cut 分隔线类。脚本紧跟 nav
-// 之后执行，无需 DOM 就绪钩子；无 JS 环境仅无高亮，不影响导航。
+// 首页仅在路径恰为 / 时命中。className 追加而非覆盖，保留上传链接的
+// cut 分隔线类。脚本紧跟 nav 之后执行，无需 DOM 就绪钩子；无 JS 环境
+// 仅无高亮，不影响导航。
 const navCurScript = `<script>
 (function(){
   var links=document.querySelectorAll('nav a'),p=location.pathname;
@@ -102,7 +109,8 @@ const navCurScript = `<script>
 
 // navHead 是人用页面的容器开头与导航条，各页面以 </div></body></html> 收尾。
 // 导航按编程语言分组：语言本体在前、包仓库在后；组名（b）与独立入口
-// （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔。
+// （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔；
+// 末尾内嵌当前页高亮脚本（见 navCurScript）。
 const navHead = `<div class="container">
 <nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><b class="cut">Go</b><a href="/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>
 ` + navCurScript
@@ -172,8 +180,8 @@ var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOC
 <div class="stats">
 <div class="stat"><b>{{.Tags}}</b><span>个 Python 构建标签</span></div>
 <div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
-<div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
 <div class="stat"><b>{{.NodeVersions}}</b><span>个 Node 版本</span></div>
+<div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
 <div class="stat"><b>{{.GoVersions}}</b><span>个 Go 版本</span></div>
 <div class="stat"><b>{{.GoModules}}</b><span>个 Go 模块</span></div>
 </div>
@@ -187,14 +195,6 @@ export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</pre>
 <h2>pip 接入（把 user:pass 换成本服务账号）</h2>
 <pre id="c2">pip install --index-url http://user:pass@{{.Host}}/simple 包名</pre>
 <button class="copy" onclick="copyCmd('c2',this)">复制</button>
-</div>
-<div class="cfg">
-<h2>Go 接入（环境变量，把 user:pass 换成本服务账号）</h2>
-<pre id="c5">export GOPROXY=http://user:pass@{{.Host}}/goproxy
-export GOSUMDB=off
-export GOTOOLCHAIN=local</pre>
-<button class="copy" onclick="copyCmd('c5',this)">复制</button>
-<p class="hint">三行缺一不可的语义：GOPROXY 指镜像后 go build / go mod download 直接走镜像；GOSUMDB=off 让 go 命令信任镜像（go.sum 完整时哈希照常校验）；GOTOOLCHAIN=local 禁止工具链联网下载（镜像不提供 sumdb，auto 模式必然失败，需要新 Go 版本时外网 download golang 补装）。缺模块时 404，外网补跑 <code>pkgmirror download gomod -r go.sum</code>。</p>
 </div>
 <div class="cfg">
 <h2>npm / pnpm 接入（写入用户或项目 .npmrc；pnpm 读取同一文件）</h2>
@@ -217,6 +217,14 @@ nvm-windows 与 mise 对 URL 内嵌凭据的支持未确认，401 时改匿名�
 fnm 同布局可用 <code>FNM_NODE_DIST_MIRROR</code>；Volta 不支持自定义镜像。</p>
 </div>
 <div class="cfg">
+<h2>Go 接入（环境变量，把 user:pass 换成本服务账号）</h2>
+<pre id="c5">export GOPROXY=http://user:pass@{{.Host}}/goproxy
+export GOSUMDB=off
+export GOTOOLCHAIN=local</pre>
+<button class="copy" onclick="copyCmd('c5',this)">复制</button>
+<p class="hint">三行缺一不可的语义：GOPROXY 指镜像后 go build / go mod download 直接走镜像；GOSUMDB=off 让 go 命令信任镜像（go.sum 完整时哈希照常校验）；GOTOOLCHAIN=local 禁止工具链联网下载（镜像不提供 sumdb，auto 模式必然失败，需要新 Go 版本时外网 download golang 补装）。缺模块时 404，外网补跑 <code>pkgmirror download gomod -r go.sum</code>。</p>
+</div>
+<div class="cfg">
 <h2>Go 版本管理器接入（二选一：用哪个工具就执行带它名字的那一行）</h2>
 <pre id="c6">export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang   # mise
 export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang        # asdf-golang</pre>
@@ -232,11 +240,12 @@ export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang        # asdf-golang
 var browseTpl = template.Must(template.New("browse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>包列表 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>PyPI 包列表</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <div class="cfgbar">pip：<code>pip install --index-url http://user:pass@{{.Host}}/simple 包名</code><br/>
 uv：<code>export UV_INDEX_URL=http://user:pass@{{.Host}}/simple</code></div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 req" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td><a href="/browse/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><a href="/browse/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="pypi"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无包。请先执行 <code>pkgmirror download pypi</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -252,11 +261,12 @@ var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Pars
 var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Python 安装包（python-build-standalone 构建）- pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Python 安装包</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <p class="sub">python-build-standalone 构建：Astral 以 CPython 官方源码构建的便携归档，uv 的 <code>uv python install</code> 即从此下载（mise、bazel 等共用），<b>不是</b> python.org 官方安装器。归档可复制到同系统（OS+架构）的机器，解压配 PATH 直接使用：Windows 无 pip.exe（用 <code>python -m pip</code>，建议预装 VC++ 运行库），Linux 需 glibc ≥ 2.17。</p>
 <div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</code></div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 3.12 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="python"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Python 安装包。请先执行 <code>pkgmirror download python x.y</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -271,10 +281,11 @@ var python404Tpl = template.Must(template.New("python404").Funcs(tmplFuncs).Pars
 var npmBrowseTpl = template.Must(template.New("npmBrowse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>npm 包列表 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>npm 包列表</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <div class="cfgbar">npm：<code>npm config set registry http://{{.Host}}/npm/</code>（认证与 yarn 接入见首页）</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 lodash" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td><a href="/browse/npm/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><a href="/browse/npm/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="npm"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 npm 包。请先执行 <code>pkgmirror download npm &lt;包名&gt;</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -292,6 +303,7 @@ var npmPkgTpl = template.Must(template.New("npmPkg").Funcs(tmplFuncs).Parse(`<!D
 var nodeTpl = template.Must(template.New("node").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Node.js 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Node.js 安装包</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <p class="sub">官方 nodejs.org/dist 的可移植归档（Linux/macOS 为 tar.xz，Windows 为 zip），解压后把 bin 目录加入 PATH 即可运行。</p>
 <div class="cfgbar">nvm：<code>export NVM_NODEJS_ORG_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
 n：<code>export N_NODE_MIRROR=http://user:pass@{{.Host}}/node</code><br/>
@@ -299,8 +311,8 @@ mise：<code>export MISE_NODE_MIRROR_URL=http://user:pass@{{.Host}}/node</code><
 nvm-windows：<code>nvm node_mirror http://{{.Host}}/node/</code>（执行一次，写入 settings.txt）<br/>
 四选一（用哪个工具执行对应一条）；nvm-windows / mise 的凭据限制与 fnm、Volta 情况见首页。</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 22 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/node/{{.Version}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/node/{{.Version}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td>{{if ne .Filename "SHASUMS256.txt"}}<form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="node"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form>{{end}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Node 安装包。请先执行 <code>pkgmirror download node &lt;版本&gt;</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -322,13 +334,14 @@ var npm404Tpl = template.Must(template.New("npm404").Funcs(tmplFuncs).Parse(`<!D
 var golangTpl = template.Must(template.New("golang").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Go 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Go 安装包</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <p class="sub">官方 dl.google.com/go 的发行归档（unix 为 tar.gz，windows 为 zip），解压后把其中的 go 目录配进 PATH 即可运行。布局与官方一致，全部文件平铺。</p>
 <div class="cfgbar">mise：<code>export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
 asdf-golang：<code>export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
 gvm 与 golang.org/dl 辅助命令不支持自定义镜像，从下表手工下载解压。</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 1.23 或 linux" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/golang/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>版本</th><th>文件</th><th>大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/golang/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="golang"><input type="hidden" name="name" value="{{.Filename}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Go 安装包。请先执行 <code>pkgmirror download golang &lt;版本&gt;</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -343,10 +356,11 @@ var golang404Tpl = template.Must(template.New("golang404").Funcs(tmplFuncs).Pars
 var gomodBrowseTpl = template.Must(template.New("gomodBrowse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Go 模块列表 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>Go 模块列表</h1>
+{{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <div class="cfgbar">Go 命令：<code>export GOPROXY=http://user:pass@{{.Host}}/goproxy GOSUMDB=off GOTOOLCHAIN=local</code>（完整接入说明见首页）</div>
 {{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤模块路径，如 cobra" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
-<table><thead><tr><th>模块路径</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
-{{range .Rows}}<tr><td><a href="/browse/gomod/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+<table><thead><tr><th>模块路径</th><th>文件数</th><th>总大小</th><th>操作</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><a href="/browse/gomod/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td><td><form method="post" action="/api/delete" class="delform"><input type="hidden" name="type" value="gomod"><input type="hidden" name="name" value="{{.Name}}"><input type="hidden" name="dryRun" value="1"><button type="submit" class="delbtn">删除</button></form></td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Go 模块。请先执行 <code>pkgmirror download gomod -r go.sum</code> 下载并上传。</p>{{end}}
 </div>` + filterScript + `
 </body></html>`))
@@ -364,8 +378,35 @@ var gomodPkgTpl = template.Must(template.New("gomodPkg").Funcs(tmplFuncs).Parse(
 var gomod404Tpl = template.Must(template.New("gomod404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>资源未同步 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>资源未同步</h1>
-<p>请求的 Go 模块资源 <code>{{.Path}}</code> 不在本镜像中（404 也会让 go 命令回退或报错，不影响协议兼容）。</p>
+<p>请求的 Go 模块资源 <code>{{.Path}}</code> 不在本镜像中。</p>
 <p>请先在外网执行 <code>pkgmirror download gomod -r go.sum</code>（或命令行 <code>模块@版本</code> 补单个）下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
+</div></body></html>`))
+
+// deletePreviewTpl 展示目标与级联清单，各区块通过独立表单执行删除。
+// 级联表单携带 deps=1；没有级联内容时隐藏该区块。取消按钮返回类型列表。
+var deletePreviewTpl = template.Must(template.New("deletePreview").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>删除预览 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>删除预览 <a class="cancelbtn" href="{{.Back}}">取消</a></h1>
+<p class="sub">{{.Type}} {{.Name}}</p>
+<form method="post" action="/api/delete">
+<input type="hidden" name="type" value="{{.Type}}">
+<input type="hidden" name="name" value="{{.Name}}">
+<h2>删除目标 <button type="submit" class="delmain">{{.BtnSelf}}</button></h2>
+<table><thead><tr><th>名称</th><th>文件数</th><th>大小</th></tr></thead><tbody>
+{{range .Targets}}<tr><td>{{.Name}}</td><td>{{len .Files}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>
+</form>
+{{if .Cascades}}<form method="post" action="/api/delete">
+<input type="hidden" name="type" value="{{.Type}}">
+<input type="hidden" name="name" value="{{.Name}}">
+<input type="hidden" name="deps" value="1">
+<h2>{{.CascadeTitle}} <button type="submit" class="delmain">{{.BtnFull}}</button></h2>
+<table><thead><tr><th>名称</th><th>文件数</th><th>大小</th></tr></thead><tbody>
+{{range .Cascades}}<tr><td>{{.Name}}</td><td>{{len .Files}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>
+<p class="hint">级联部分：{{.CascadeCount}} 个文件，{{humanSize .CascadeSize}}；目标与级联合计：{{.TotalCount}} 个文件，{{humanSize .TotalSize}}</p>
+</form>
+{{else}}<p class="hint">没有可级联删除的内容。</p>{{end}}
 </div></body></html>`))
 
 var uploadTpl = template.Must(template.New("upload").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>上传 - pkgmirror</title>` + pageCSS + `</head><body>

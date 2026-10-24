@@ -140,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
 	mux.HandleFunc("/api/upload", s.handleUploadAPI)
+	mux.HandleFunc("/api/delete", s.handleDeleteAPI)
 	// 精确路径注册：直接输出内嵌字节，不挂 FileServer，无目录遍历面
 	mux.HandleFunc("/static/ufuzzy.min.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -492,7 +493,7 @@ func (s *Server) handlePythonBrowse(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	render(w, pythonTpl, map[string]any{"Rows": rows, "Host": r.Host})
+	render(w, pythonTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
 // handleNode 提供 Node 发行版分发：/node/ 与 /node/{vX.Y.Z}/ 为浏览页，
@@ -571,7 +572,7 @@ func (s *Server) handleNodeBrowse(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	render(w, nodeTpl, map[string]any{"Rows": rows, "Host": r.Host})
+	render(w, nodeTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
 // handleGolang 提供 Go 发行归档分发：/golang/ 为浏览页，/golang/{file} 为
@@ -655,7 +656,7 @@ func (s *Server) handleGolangBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows[i].Filename < rows[j].Filename
 	})
-	render(w, golangTpl, map[string]any{"Rows": rows, "Host": r.Host})
+	render(w, golangTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
 // goProxyNotFound 返回 404 + HTML 提示页，引导外网补下载。
@@ -888,7 +889,7 @@ func (s *Server) handleGomodBrowse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取 gomod 目录失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, gomodBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host})
+	render(w, gomodBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
 // handleGomodPkgPage 渲染单个 Go 模块的详情页（@v 文件列表）。
@@ -1076,7 +1077,7 @@ func (s *Server) handleNpmBrowse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取 npm 目录失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, npmBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host})
+	render(w, npmBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 }
 
 // handleNpmPkgPage 渲染单个 npm 包的详情页（文件列表与下载链接）。
@@ -1158,7 +1159,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 				rows = append(rows, row{Name: name, Count: len(files), Size: total})
 			}
 		}
-		render(w, browseTpl, map[string]any{"Rows": rows, "Host": r.Host})
+		render(w, browseTpl, map[string]any{"Rows": rows, "Host": r.Host, "Msg": r.URL.Query().Get("msg")})
 		return
 	}
 	name := pypi.NormalizeName(rest)

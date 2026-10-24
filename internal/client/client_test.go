@@ -259,3 +259,38 @@ func TestResolveGoRef(t *testing.T) {
 		t.Error("不存在的模块应报错")
 	}
 }
+
+// TestRunDelete 覆盖客户端删除流程：先 dry-run 后执行两次请求的语义
+// 与服务端错误的传播。
+func TestRunDelete(t *testing.T) {
+	var bodies []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		switch string(body) {
+		case `{"type":"pypi","name":"six","deps":true,"dryRun":true}`:
+			io.WriteString(w, `{"status":"preview","targets":[{"name":"six","files":[{"path":"pypi/six/a.whl","size":10}],"size":10}],"cascades":[{"name":"idna","files":[{"path":"pypi/idna/b.whl","size":5}],"size":5}],"count":2,"total":15}`)
+		case `{"type":"pypi","name":"six","deps":true,"dryRun":false}`:
+			io.WriteString(w, `{"status":"ok","targets":[{"name":"six","files":[{"path":"pypi/six/a.whl","size":10}],"size":10}],"cascades":[{"name":"idna","files":[{"path":"pypi/idna/b.whl","size":5}],"size":5}],"count":2,"total":15}`)
+		default:
+			http.Error(w, "pypi six 不存在", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	if err := RunDelete(DeleteOptions{Type: "pypi", Name: "six", Deps: true, Yes: true, Server: ts.URL}); err != nil {
+		t.Fatalf("删除失败: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("应发起 dry-run 与执行两次请求, 发起 %d 次", len(bodies))
+	}
+	if bodies[0] != `{"type":"pypi","name":"six","deps":true,"dryRun":true}` || bodies[1] != `{"type":"pypi","name":"six","deps":true,"dryRun":false}` {
+		t.Errorf("请求体顺序或内容错误: %v", bodies)
+	}
+
+	// 目标不存在：404 与服务端错误文本原样传播
+	err := RunDelete(DeleteOptions{Type: "pypi", Name: "nope", Yes: true, Server: ts.URL})
+	if err == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("404 应原样传播, 得到 %v", err)
+	}
+}
