@@ -43,6 +43,7 @@ nav{background:#fff;border:1px solid #e1e4e8;border-radius:8px;padding:.5rem .75
 nav a{color:#0969da;text-decoration:none;padding:.35rem .7rem;border-radius:6px;display:inline-block}
 nav a:hover{background:#eaf2fc}
 nav b{color:#57606a;font-size:.95rem;padding:.35rem .7rem;display:inline-block}
+nav .cut{border-left:1px solid #e1e4e8;margin-left:.55rem}
 table{background:#fff;border:1px solid #e1e4e8;border-radius:8px;border-collapse:separate;border-spacing:0;width:100%;margin:1rem 0}
 th,td{padding:.5rem .8rem;border-bottom:1px solid #eaecef;text-align:left;word-break:break-all}
 th{background:#f6f8fa;font-weight:600}
@@ -69,11 +70,43 @@ button[type=submit]:hover{background:#1a7f37}
 .hint{color:#57606a}
 .cfgbar{background:#fff;border:1px solid #e1e4e8;border-radius:8px;padding:.6rem 1rem;margin:0 0 1rem;font-size:.9rem;line-height:1.9}
 .cfgbar code{font-size:.85rem}
+.filterbar{margin:0 0 1rem}
+.filterbar .hint{margin-left:.6rem}
+nav a.cur{background:#0969da;color:#fff}
 </style>`
 
+// navCurScript 高亮当前页对应的导航链接（cur 类）。
+//
+// 匹配规则：当前路径与各链接 href 统一补尾斜杠后做前缀比较，取最长的
+// 命中者（/browse/gomod/x 同时命中 /browse/ 与 /browse/gomod/，取长者）；
+// 首页仅在路径恰为 / 时命中。npm 包的人用浏览页是 /browse/npm/... 而
+// 导航入口 href 是 /npm/（registry 协议根），先做别名归一再匹配。
+// className 追加而非覆盖，保留上传链接的 cut 分隔线类。脚本紧跟 nav
+// 之后执行，无需 DOM 就绪钩子；无 JS 环境仅无高亮，不影响导航。
+const navCurScript = `<script>
+(function(){
+  var links=document.querySelectorAll('nav a'),p=location.pathname;
+  if(p.charAt(p.length-1)!=='/')p+='/';
+  p=p.replace(/^\/browse\/npm\//,'/npm/');
+  var best=-1,bestLen=0;
+  for(var i=0;i<links.length;i++){
+    var h=links[i].getAttribute('href');
+    if(h.charAt(h.length-1)!=='/')h+='/';
+    if((h==='/'&&p==='/')||(h!=='/'&&p.indexOf(h)===0)){
+      if(h.length>bestLen){best=i;bestLen=h.length}
+    }
+  }
+  if(best>=0)links[best].className+=' cur';
+})();
+</script>`
+
 // navHead 是人用页面的容器开头与导航条，各页面以 </div></body></html> 收尾。
+// 导航按编程语言分组：语言本体在前、包仓库在后；组名（b）与独立入口
+// （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔；
+// 后续扩展（如 node 二进制）在 Node.js 组内加链接即可。
 const navHead = `<div class="container">
-<nav><b>pkgmirror</b><a href="/">首页</a><a href="/browse/">PyPI 包</a><a href="/python/">Python 安装包</a><a href="/npm/">npm 包</a><a href="/upload">上传</a></nav>`
+<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>
+` + navCurScript
 
 // copyScript 是配置块的复制按钮脚本；浏览器不支持时退化为提示手动复制。
 const copyScript = `<script>
@@ -87,17 +120,59 @@ function copyCmd(id,btn){
 }
 </script>`
 
+// filterScript 是列表页的模糊过滤脚本，配合 #pkg-filter 输入框使用。
+// 匹配与排序用内嵌的 uFuzzy（见 /static/ufuzzy.min.js），intraMode:1
+// 开启单字符插删容错（打错一个字母仍可命中）；库缺失时退化为子串匹配。
+// 整行文本参与匹配（列表页首列不一定是包名），清空输入时按页面原始行序恢复。
+const filterScript = `<script src="/static/ufuzzy.min.js"></script>
+<script>
+(function(){
+  var box=document.getElementById('pkg-filter');
+  var tbody=document.querySelector('table tbody');
+  if(!box||!tbody)return;
+  var rows=Array.prototype.slice.call(tbody.rows);
+  var texts=rows.map(function(tr){return tr.textContent.toLowerCase()});
+  var hint=document.getElementById('pkg-filter-hint');
+  var uf=window.uFuzzy?new uFuzzy({intraMode:1}):null;
+  function apply(){
+    var q=box.value.trim(),hits,i;
+    if(!q){
+      for(i=0;i<rows.length;i++){rows[i].style.display='';tbody.appendChild(rows[i])}
+      if(hint)hint.textContent='';
+      return;
+    }
+    // API 序列（uFuzzy README）：filter → info → sort，info 可能进一步
+    // 缩减 filter 结果，最终行 = info.idx[order[i]]
+    if(uf){
+      var idx=uf.filter(texts,q);
+      hits=[];
+      if(idx&&idx.length){
+        var info=uf.info(idx,texts,q);
+        var order=uf.sort(info,texts,q);
+        for(i=0;i<order.length;i++)hits.push(info.idx[order[i]]);
+      }
+    }else{
+      var lq=q.toLowerCase();
+      hits=texts.reduce(function(a,t,i){if(t.indexOf(lq)>=0)a.push(i);return a},[]);
+    }
+    for(i=0;i<hits.length;i++)tbody.appendChild(rows[hits[i]]);
+    var set={};for(i=0;i<hits.length;i++)set[hits[i]]=1;
+    for(i=0;i<rows.length;i++)rows[i].style.display=set[i]?'':'none';
+    if(hint)hint.textContent=hits.length?('命中 '+hits.length+' 项'):'无匹配项';
+  }
+  box.addEventListener('input',apply);
+})();
+</script>`
+
 // Host 字段来自请求的 Host 头，页面用它拼出可直接复制的接入地址，
 // 用户访问用的是什么地址，页面上显示的就是什么地址。
 var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>pkgmirror</title>` + pageCSS + `</head><body>
-<div class="container" style="margin-bottom:1.5rem">
+` + navHead + `
 <h1>pkgmirror</h1>
 <p class="sub">PyPI / uv Python / npm 离线镜像</p>
-</div>
-` + navHead + `
 <div class="stats">
-<div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
 <div class="stat"><b>{{.Tags}}</b><span>个 Python 构建标签</span></div>
+<div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
 <div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
 </div>
 <div class="cfg">
@@ -128,10 +203,12 @@ var browseTpl = template.Must(template.New("browse").Funcs(tmplFuncs).Parse(`<!D
 <h1>PyPI 包列表</h1>
 <div class="cfgbar">pip：<code>pip install --index-url http://user:pass@{{.Host}}/simple 包名</code><br/>
 uv：<code>export UV_INDEX_URL=http://user:pass@{{.Host}}/simple</code></div>
-{{if .Rows}}<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 req" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
 {{range .Rows}}<tr><td><a href="/browse/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无包。请先执行 <code>pkgmirror download pypi</code> 下载并上传。</p>{{end}}
-</div></body></html>`))
+</div>` + filterScript + `
+</body></html>`))
 
 var browsePkgTpl = template.Must(template.New("browsePkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - PyPI 包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
@@ -145,10 +222,12 @@ var pythonTpl = template.Must(template.New("python").Funcs(tmplFuncs).Parse(`<!D
 ` + navHead + `
 <h1>Python 安装包</h1>
 <div class="cfgbar">uv：<code>export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</code></div>
-{{if .Rows}}<table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 3.12 或 win" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>构建标签</th><th>Python 版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
 {{range .Rows}}<tr><td>{{.Tag}}</td><td>{{.Version}}</td><td><a href="/python/{{.Tag}}/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 Python 安装包。请先执行 <code>pkgmirror download python x.y</code> 下载并上传。</p>{{end}}
-</div></body></html>`))
+</div>` + filterScript + `
+</body></html>`))
 
 var python404Tpl = template.Must(template.New("python404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
@@ -161,10 +240,12 @@ var npmBrowseTpl = template.Must(template.New("npmBrowse").Funcs(tmplFuncs).Pars
 ` + navHead + `
 <h1>npm 包列表</h1>
 <div class="cfgbar">npm：<code>npm config set registry http://{{.Host}}/npm/</code>（认证与 yarn 接入见首页）</div>
-{{if .Rows}}<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤包名，如 lodash" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>包名</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
 {{range .Rows}}<tr><td><a href="/browse/npm/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="hint">暂无 npm 包。请先执行 <code>pkgmirror download npm &lt;包名&gt;</code> 下载并上传。</p>{{end}}
-</div></body></html>`))
+</div>` + filterScript + `
+</body></html>`))
 
 var npmPkgTpl = template.Must(template.New("npmPkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - npm 包 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `

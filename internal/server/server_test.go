@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -299,6 +300,140 @@ func TestNpmUploadAndServe(t *testing.T) {
 	}
 }
 
+func TestClientIP(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	// X-Forwarded-For 多段：取最左一段（原始客户端），去除空白
+	req.RemoteAddr, req.Header = "10.0.0.2:1234", http.Header{}
+	req.Header.Set("X-Forwarded-For", " 192.168.1.10 , 10.0.0.1 ")
+	if got := clientIP(req); got != "192.168.1.10" {
+		t.Errorf("XFF 多段应取最左: %q", got)
+	}
+	// X-Forwarded-For 首段为空时回退 X-Real-IP
+	req.Header.Set("X-Forwarded-For", ", 10.0.0.1")
+	req.Header.Set("X-Real-IP", "192.168.1.20")
+	if got := clientIP(req); got != "192.168.1.20" {
+		t.Errorf("XFF 空段应回退 X-Real-IP: %q", got)
+	}
+	// 无转发头：取 RemoteAddr 主机部分
+	req.Header = http.Header{}
+	if got := clientIP(req); got != "10.0.0.2" {
+		t.Errorf("应取 RemoteAddr 主机: %q", got)
+	}
+	// RemoteAddr 无端口：返回原文
+	req.RemoteAddr = "unix-socket"
+	if got := clientIP(req); got != "unix-socket" {
+		t.Errorf("无端口时应返回原文: %q", got)
+	}
+}
+
+// captureLog 把标准日志重定向到缓冲，返回恢复函数与缓冲。
+func captureLog(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	return &buf, func() { log.SetOutput(old) }
+}
+
+func TestAccessLog(t *testing.T) {
+	_, ts, _ := newTestServer(t, nil)
+	buf, restore := captureLog(t)
+	defer restore()
+
+	// pypi 文件下载成功 → 下载日志（含来源 IP 与 humanSize 大小）
+	content := []byte("wheel bytes")
+	sum := sha256.Sum256(content)
+	resp := postUpload(t, ts.URL, "", "", "pypi", "demo", "", hex.EncodeToString(sum[:]), "demo-1.0.tar.gz", content)
+	resp.Body.Close()
+	resp, _ = http.Get(ts.URL + "/pypi/demo/demo-1.0.tar.gz")
+	resp.Body.Close()
+	logs := buf.String()
+	if !strings.Contains(logs, "已接收 ip=127.0.0.1 pypi/demo/demo-1.0.tar.gz") {
+		t.Errorf("上传日志应含来源 IP: %q", logs)
+	}
+	if !strings.Contains(logs, "下载 ip=127.0.0.1 GET /pypi/demo/demo-1.0.tar.gz 200 11B") {
+		t.Errorf("下载日志格式不符: %q", logs)
+	}
+
+	// python 未同步 → 缺失日志
+	buf.Reset()
+	resp, _ = http.Get(ts.URL + "/python/20260101/cpython-3.12.9-linux.tar.gz")
+	resp.Body.Close()
+	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /python/20260101/cpython-3.12.9-linux.tar.gz 404 0B") {
+		t.Errorf("缺失日志格式不符: %q", logs)
+	}
+
+	// npm packument 未同步 → 缺失日志（经 npmNotFound）
+	buf.Reset()
+	resp, _ = http.Get(ts.URL + "/npm/missing-pkg")
+	resp.Body.Close()
+	if logs = buf.String(); !strings.Contains(logs, "缺失 ip=127.0.0.1 GET /npm/missing-pkg 404 0B") {
+		t.Errorf("npm 缺失日志格式不符: %q", logs)
+	}
+
+	// 反代场景：X-Forwarded-For 透传到下载日志
+	buf.Reset()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/pypi/demo/demo-1.0.tar.gz", nil)
+	req.Header.Set("X-Forwarded-For", "192.168.1.30, 10.0.0.1")
+	http.DefaultClient.Do(req)
+	if logs = buf.String(); !strings.Contains(logs, "下载 ip=192.168.1.30") {
+		t.Errorf("XFF 应透传到下载日志: %q", logs)
+	}
+}
+
+func TestNavGroupAndFilter(t *testing.T) {
+	_, ts, _ := newTestServer(t, nil)
+	// 造一个 pypi 包让列表页输出表格与过滤框
+	content := []byte("x")
+	sum := sha256.Sum256(content)
+	resp := postUpload(t, ts.URL, "", "", "pypi", "demo", "", hex.EncodeToString(sum[:]), "demo-1.0.tar.gz", content)
+	resp.Body.Close()
+
+	// 导航分组：无品牌文字；组名带 cut 分隔类，语言本体在前、包在后
+	page, _ := http.Get(ts.URL + "/browse/")
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	html := string(body)
+	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>`)
+	if pyPos < 0 || strings.Contains(html, `<b>pkgmirror</b>`) {
+		t.Errorf("导航分组结构不符:\n%s", html)
+	}
+
+	// 首页导航位于标题块之前
+	page, _ = http.Get(ts.URL + "/")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	home := string(body)
+	navPos := strings.Index(home, `<nav><a href="/">首页</a>`)
+	titlePos := strings.Index(home, `<h1>pkgmirror</h1>`)
+	if navPos < 0 || titlePos < navPos {
+		t.Errorf("首页导航应在标题块之前: nav@%d title@%d", navPos, titlePos)
+	}
+
+	// 列表页含过滤框与 uFuzzy 脚本引用
+	for _, must := range []string{`id="pkg-filter"`, `id="pkg-filter-hint"`, `src="/static/ufuzzy.min.js"`} {
+		if !strings.Contains(html, must) {
+			t.Errorf("列表页缺少 %s", must)
+		}
+	}
+
+	// 静态资源返回完整内嵌内容
+	page, _ = http.Get(ts.URL + "/static/ufuzzy.min.js")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK || len(body) != len(ufuzzyJS) {
+		t.Errorf("ufuzzy.min.js 应 200 且内容完整: %d %d/%d", page.StatusCode, len(body), len(ufuzzyJS))
+	}
+
+	// Python 列表页同样具备过滤能力（无数据时无表格，本例只验证脚本引用）
+	page, _ = http.Get(ts.URL + "/python/")
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	if !strings.Contains(string(body), `src="/static/ufuzzy.min.js"`) {
+		t.Error("python 列表页缺少 uFuzzy 脚本引用")
+	}
+}
+
 // TestLoadConfig 覆盖配置解析、数据路径基准、默认值与非法 TOML。
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -328,5 +463,26 @@ func TestLoadConfig(t *testing.T) {
 	os.WriteFile(bad, []byte("listen = "), 0o644)
 	if _, err := LoadConfig(bad); err == nil {
 		t.Error("非法 TOML 应报错")
+	}
+}
+
+// TestNavCurrentScript 验证导航高亮：全部人用页面均输出 cur 样式与
+// 内联匹配脚本（匹配逻辑由浏览器执行，这里只验证注入完整）。
+func TestNavCurrentScript(t *testing.T) {
+	_, ts, _ := newTestServer(t, nil)
+	pages := []string{"/", "/python/", "/browse/", "/npm/", "/upload"}
+	for _, p := range pages {
+		resp, err := http.Get(ts.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if !strings.Contains(string(body), "nav a.cur{") {
+			t.Errorf("%s 应含选中态样式", p)
+		}
+		if !strings.Contains(string(body), "links[best].className+=' cur'") {
+			t.Errorf("%s 应含高亮脚本", p)
+		}
 	}
 }

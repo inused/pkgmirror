@@ -5,7 +5,6 @@ uv / pip / npm 离线镜像工具：单二进制提供服务端与客户端，�
 
 ## 功能特性
 
-- **PyPI 包镜像**：PEP 503 simple 协议，pip / uv 直接可用
 - **Python 安装包镜像**：`uv python install` 直接可用（含精确补丁版本）
 - **npm 包镜像**：标准 registry 协议（packument + tarball），npm / pnpm / yarn 直接可用
 - **按需下载客户端**：自动解析依赖（uv / npm），支持按版本、操作系统、架构过滤；

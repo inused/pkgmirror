@@ -5,12 +5,14 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +27,12 @@ import (
 	"pkgmirror/internal/paths"
 	"pkgmirror/internal/pypi"
 )
+
+// ufuzzyJS 是内嵌的 uFuzzy 库（列表页模糊搜索用），随二进制分发，
+// 离线环境不产生外部请求。
+//
+//go:embed static/ufuzzy.min.js
+var ufuzzyJS []byte
 
 // Config 是服务端配置，对应 server.toml。
 type Config struct {
@@ -121,7 +129,46 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
 	mux.HandleFunc("/api/upload", s.handleUploadAPI)
+	// 精确路径注册：直接输出内嵌字节，不挂 FileServer，无目录遍历面
+	mux.HandleFunc("/static/ufuzzy.min.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Write(ufuzzyJS)
+	})
 	return s.basicAuth(mux)
+}
+
+// clientIP 返回请求来源 IP，供访问与上传日志排障使用。
+//
+// 依次取 X-Forwarded-For 首段（反代追加链最左的原始客户端）、X-Real-IP、
+// RemoteAddr 主机部分。两个转发头均可被直连客户端伪造，仅在直连或可信
+// 反代部署下准确；只用于排障定位，不作访问控制依据。
+//
+//	@param r *http.Request 当前请求。
+//	@return string 来源 IP；RemoteAddr 无端口可解析时返回其原文。
+func clientIP(r *http.Request) string {
+	if ip, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ","); strings.TrimSpace(ip) != "" {
+		return strings.TrimSpace(ip)
+	}
+	if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// logAccess 记录文件下载与资源缺失事件，包含来源 IP、方法、路径和大小。
+//
+// 下载事件在 ServeFile 前记录，不表示传输完成。浏览页、索引及元数据的
+// 成功请求不记录，npm 和 Go 模块元数据缺失时记录“缺失”。
+//
+//	@param r *http.Request 当前请求（取来源 IP、方法与路径）。
+//	@param event string 事件类型："下载" 或 "缺失"。
+//	@param status int HTTP 状态码。
+//	@param size int64 响应文件字节数；无文件体时为 0。
+func logAccess(r *http.Request, event string, status int, size int64) {
+	log.Printf("%s ip=%s %s %s %d %s", event, clientIP(r), r.Method, r.URL.EscapedPath(), status, humanSize(size))
 }
 
 // ListenAndServe 启动 HTTP 服务，阻塞直至出错。
@@ -329,18 +376,23 @@ func (s *Server) listPythonTags() ([]string, error) {
 }
 
 // handlePypiFiles 提供 PyPI 包文件下载。包名与文件名走白名单校验，天然无路径穿越。
+// 下载与缺失均记录访问日志。
 func (s *Server) handlePypiFiles(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/pypi/")
 	name, filename, ok := strings.Cut(rest, "/")
 	if !ok || !nameRe.MatchString(name) || !fileRe.MatchString(filename) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
 	path := filepath.Join(s.cfg.Root, "pypi", name, filename)
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
+	logAccess(r, "下载", http.StatusOK, info.Size())
 	http.ServeFile(w, r, path)
 }
 
@@ -356,6 +408,7 @@ func (s *Server) handlePython(w http.ResponseWriter, r *http.Request) {
 	}
 	tag, filename, hasFile := strings.Cut(rest, "/")
 	if !tagRe.MatchString(tag) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
@@ -364,16 +417,20 @@ func (s *Server) handlePython(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !fileRe.MatchString(filename) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
 	path := filepath.Join(s.cfg.Root, "python", tag, filename)
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		renderBody(w, python404Tpl, map[string]any{"Path": r.URL.Path})
 		return
 	}
+	logAccess(r, "下载", http.StatusOK, info.Size())
 	http.ServeFile(w, r, path)
 }
 
@@ -440,6 +497,7 @@ func (s *Server) handleNpm(w http.ResponseWriter, r *http.Request) {
 	rawName, file, isFile := strings.Cut(rest, "/-/")
 	name, err := url.PathUnescape(rawName)
 	if err != nil || !npm.ValidName(name) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
@@ -448,14 +506,17 @@ func (s *Server) handleNpm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !fileRe.MatchString(file) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
 		http.NotFound(w, r)
 		return
 	}
 	path := filepath.Join(s.cfg.Root, "npm", filepath.FromSlash(name), file)
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		s.npmNotFound(w, r)
 		return
 	}
+	logAccess(r, "下载", http.StatusOK, info.Size())
 	http.ServeFile(w, r, path)
 }
 
@@ -482,8 +543,10 @@ func (s *Server) servePackument(w http.ResponseWriter, r *http.Request, name str
 	w.Write(out)
 }
 
-// npmNotFound 返回 404 状态码 + HTML 提示页，引导外网补下载。
+// npmNotFound 返回 404 状态码 + HTML 提示页，引导外网补下载，
+// 并记录缺失日志（packument 与 tarball 的 404 都经由本函数）。
 func (s *Server) npmNotFound(w http.ResponseWriter, r *http.Request) {
+	logAccess(r, "缺失", http.StatusNotFound, 0)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	renderBody(w, npm404Tpl, map[string]any{"Path": r.URL.Path})
@@ -745,7 +808,7 @@ func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, status, err := s.storeUpload(dest, wantHash, file)
+	result, status, err := s.storeUpload(dest, wantHash, clientIP(r), file)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -764,11 +827,12 @@ func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 //
 //	@param dest string 相对 root 的目标路径（已通过白名单校验）。
 //	@param wantHex string 调用方提供的期望 sha256，空串表示不校验。
+//	@param ip string 上传来源 IP（clientIP 的结果），仅用于成功日志。
 //	@param src io.Reader 文件内容。
 //	@return uploadResult 落盘结果。
 //	@return int 错误时的 HTTP 状态码，成功时忽略。
 //	@return error 处理失败的原因；目标已存在但哈希不一致时状态码为 409。
-func (s *Server) storeUpload(dest, wantHex string, src io.Reader) (uploadResult, int, error) {
+func (s *Server) storeUpload(dest, wantHex, ip string, src io.Reader) (uploadResult, int, error) {
 	abs := filepath.Join(s.cfg.Root, dest)
 	dir := filepath.Dir(abs)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -803,6 +867,6 @@ func (s *Server) storeUpload(dest, wantHex string, src io.Reader) (uploadResult,
 		return uploadResult{}, http.StatusInternalServerError, fmt.Errorf("落盘失败: %w", err)
 	}
 	_ = os.WriteFile(abs+".sha256", []byte(gotHex+"\n"), 0o644)
-	log.Printf("已接收 %s (sha256=%s)", dest, gotHex[:12])
+	log.Printf("已接收 ip=%s %s (sha256=%s)", ip, dest, gotHex[:12])
 	return uploadResult{Status: "ok", Path: dest}, 0, nil
 }
