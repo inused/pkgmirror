@@ -13,7 +13,9 @@ import (
 // type 为 "pypi" 时 Name 必填（PEP 503 规范包名）；
 // type 为 "python" 时 Tag 必填（python-build-standalone 构建标签）；
 // type 为 "npm" 时 Name 必填（完整包名，scoped 时含 @scope/ 前缀）；
-// type 为 "node" 时 Tag 必填（Node 版本目录名，如 v22.14.0）。
+// type 为 "node" 时 Tag 必填（Node 版本目录名，如 v22.14.0）；
+// type 为 "golang" 时不使用 Name/Tag（flat 布局，文件名即含版本）；
+// type 为 "gomod" 时 Name 必填（模块路径，原始大小写，如 github.com/Azure/azure-sdk）。
 // Path 仅用于上传方在本下载产出目录内定位文件，服务端按 type 与 name/tag/filename
 // 自行构造落盘路径，不信任 Path。
 type File struct {
@@ -55,13 +57,13 @@ func Load(dir string) (Manifest, error) {
 		return m, fmt.Errorf("清单为空")
 	}
 	for i, f := range m.Files {
-		if f.Type != "pypi" && f.Type != "python" && f.Type != "npm" && f.Type != "node" {
+		if f.Type != "pypi" && f.Type != "python" && f.Type != "npm" && f.Type != "node" && f.Type != "golang" && f.Type != "gomod" {
 			return m, fmt.Errorf("第 %d 个文件 type 非法: %q", i+1, f.Type)
 		}
 		if f.Filename == "" || f.Path == "" || f.SHA256 == "" {
 			return m, fmt.Errorf("第 %d 个文件缺少 filename/path/sha256", i+1)
 		}
-		if (f.Type == "pypi" || f.Type == "npm") && f.Name == "" {
+		if (f.Type == "pypi" || f.Type == "npm" || f.Type == "gomod") && f.Name == "" {
 			return m, fmt.Errorf("第 %d 个文件（%s）缺少 name", i+1, f.Type)
 		}
 		if (f.Type == "python" || f.Type == "node") && f.Tag == "" {

@@ -104,7 +104,7 @@ const navCurScript = `<script>
 // 导航按编程语言分组：语言本体在前、包仓库在后；组名（b）与独立入口
 // （上传）带 cut 类，左侧一道细竖线（颜色同页面边框灰）作组间分隔。
 const navHead = `<div class="container">
-<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>
+<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><b class="cut">Go</b><a href="/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>
 ` + navCurScript
 
 // copyScript 是配置块的复制按钮脚本；浏览器不支持时退化为提示手动复制。
@@ -168,12 +168,14 @@ const filterScript = `<script src="/static/ufuzzy.min.js"></script>
 var indexTpl = template.Must(template.New("index").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>pkgmirror</h1>
-<p class="sub">PyPI / uv Python / npm 离线镜像</p>
+<p class="sub">PyPI / uv Python / npm / Go 离线镜像</p>
 <div class="stats">
 <div class="stat"><b>{{.Tags}}</b><span>个 Python 构建标签</span></div>
 <div class="stat"><b>{{.Packages}}</b><span>个 PyPI 包</span></div>
 <div class="stat"><b>{{.NpmPackages}}</b><span>个 npm 包</span></div>
 <div class="stat"><b>{{.NodeVersions}}</b><span>个 Node 版本</span></div>
+<div class="stat"><b>{{.GoVersions}}</b><span>个 Go 版本</span></div>
+<div class="stat"><b>{{.GoModules}}</b><span>个 Go 模块</span></div>
 </div>
 <div class="cfg">
 <h2>uv 接入（环境变量，把 user:pass 换成本服务账号）</h2>
@@ -185,6 +187,14 @@ export UV_PYTHON_INSTALL_MIRROR=http://user:pass@{{.Host}}/python</pre>
 <h2>pip 接入（把 user:pass 换成本服务账号）</h2>
 <pre id="c2">pip install --index-url http://user:pass@{{.Host}}/simple 包名</pre>
 <button class="copy" onclick="copyCmd('c2',this)">复制</button>
+</div>
+<div class="cfg">
+<h2>Go 接入（环境变量，把 user:pass 换成本服务账号）</h2>
+<pre id="c5">export GOPROXY=http://user:pass@{{.Host}}/goproxy
+export GOSUMDB=off
+export GOTOOLCHAIN=local</pre>
+<button class="copy" onclick="copyCmd('c5',this)">复制</button>
+<p class="hint">三行缺一不可的语义：GOPROXY 指镜像后 go build / go mod download 直接走镜像；GOSUMDB=off 让 go 命令信任镜像（go.sum 完整时哈希照常校验）；GOTOOLCHAIN=local 禁止工具链联网下载（镜像不提供 sumdb，auto 模式必然失败，需要新 Go 版本时外网 download golang 补装）。缺模块时 404，外网补跑 <code>pkgmirror download gomod -r go.sum</code>。</p>
 </div>
 <div class="cfg">
 <h2>npm / pnpm 接入（写入用户或项目 .npmrc；pnpm 读取同一文件）</h2>
@@ -205,6 +215,15 @@ nvm node_mirror http://{{.Host}}/node/                         # nvm-windows（�
 换源后照常 <code>nvm install 22</code> / <code>n 22</code> / <code>mise use -g node@22</code>。
 nvm-windows 与 mise 对 URL 内嵌凭据的支持未确认，401 时改匿名部署或走安装包页手工下载；
 fnm 同布局可用 <code>FNM_NODE_DIST_MIRROR</code>；Volta 不支持自定义镜像。</p>
+</div>
+<div class="cfg">
+<h2>Go 版本管理器接入（二选一：用哪个工具就执行带它名字的那一行）</h2>
+<pre id="c6">export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang   # mise
+export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang        # asdf-golang</pre>
+<button class="copy" onclick="copyCmd('c6',this)">复制</button>
+<p class="hint">换源后照常 <code>mise use -g golang@1.23</code> / <code>asdf install golang 1.23.4</code>；
+校验用的 .sha256 伴随文件随归档自动提供。gvm 与 <code>golang.org/dl</code> 辅助命令不支持自定义镜像，
+走安装包页手工下载解压。</p>
 </div>
 </div>
 ` + copyScript + `
@@ -300,17 +319,66 @@ var npm404Tpl = template.Must(template.New("npm404").Funcs(tmplFuncs).Parse(`<!D
 <p>请先在外网执行 <code>pkgmirror download npm &lt;包名&gt;</code>（或补充 <code>-r package-lock.json</code>）下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
 </div></body></html>`))
 
+var golangTpl = template.Must(template.New("golang").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Go 安装包 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>Go 安装包</h1>
+<p class="sub">官方 dl.google.com/go 的发行归档（unix 为 tar.gz，windows 为 zip），解压后把其中的 go 目录配进 PATH 即可运行。布局与官方一致，全部文件平铺。</p>
+<div class="cfgbar">mise：<code>export MISE_GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
+asdf-golang：<code>export GO_DOWNLOAD_MIRROR=http://user:pass@{{.Host}}/golang</code><br/>
+gvm 与 golang.org/dl 辅助命令不支持自定义镜像，从下表手工下载解压。</div>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤，如 1.23 或 linux" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>版本</th><th>文件</th><th>大小</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{.Version}}</td><td><a href="/golang/{{.Filename}}">{{.Filename}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无 Go 安装包。请先执行 <code>pkgmirror download golang &lt;版本&gt;</code> 下载并上传。</p>{{end}}
+</div>` + filterScript + `
+</body></html>`))
+
+var golang404Tpl = template.Must(template.New("golang404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>文件未同步 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>文件未同步</h1>
+<p>请求的 Go 发行文件 <code>{{.Path}}</code> 不在本镜像中。</p>
+<p>请先执行 <code>pkgmirror download golang &lt;版本&gt;</code> 下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
+</div></body></html>`))
+
+var gomodBrowseTpl = template.Must(template.New("gomodBrowse").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Go 模块列表 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>Go 模块列表</h1>
+<div class="cfgbar">Go 命令：<code>export GOPROXY=http://user:pass@{{.Host}}/goproxy GOSUMDB=off GOTOOLCHAIN=local</code>（完整接入说明见首页）</div>
+{{if .Rows}}<div class="filterbar"><input type="text" id="pkg-filter" placeholder="输入过滤模块路径，如 cobra" autocomplete="off"><span id="pkg-filter-hint" class="hint"></span></div>
+<table><thead><tr><th>模块路径</th><th>文件数</th><th>总大小</th></tr></thead><tbody>
+{{range .Rows}}<tr><td><a href="/browse/gomod/{{.Name}}/">{{.Name}}</a></td><td>{{.Count}}</td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>{{else}}<p class="hint">暂无 Go 模块。请先执行 <code>pkgmirror download gomod -r go.sum</code> 下载并上传。</p>{{end}}
+</div>` + filterScript + `
+</body></html>`))
+
+var gomodPkgTpl = template.Must(template.New("gomodPkg").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>{{.Name}} - Go 模块 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>{{.Name}}</h1>
+<p class="sub">每个版本三件套：.mod（依赖声明）、.zip（模块源码）、.info（版本元数据）；均为 module proxy 协议数据，原样供内网 go 命令拉取。</p>
+<table><thead><tr><th>文件</th><th>大小</th></tr></thead><tbody>
+{{range .Files}}<tr><td><a href="/goproxy/{{$.Escaped}}/@v/{{.Name}}">{{.Name}}</a></td><td>{{humanSize .Size}}</td></tr>{{end}}
+</tbody></table>
+<p class="hint">module proxy 协议入口：<code>/goproxy/{{.Escaped}}/@v/list</code>（版本列表）与 <code>/goproxy/{{.Escaped}}/@latest</code>。</p>
+</div></body></html>`))
+
+var gomod404Tpl = template.Must(template.New("gomod404").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>资源未同步 - pkgmirror</title>` + pageCSS + `</head><body>
+` + navHead + `
+<h1>资源未同步</h1>
+<p>请求的 Go 模块资源 <code>{{.Path}}</code> 不在本镜像中（404 也会让 go 命令回退或报错，不影响协议兼容）。</p>
+<p>请先在外网执行 <code>pkgmirror download gomod -r go.sum</code>（或命令行 <code>模块@版本</code> 补单个）下载对应文件，再用 <code>pkgmirror upload</code> 上传到本服务。</p>
+</div></body></html>`))
+
 var uploadTpl = template.Must(template.New("upload").Funcs(tmplFuncs).Parse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>上传 - pkgmirror</title>` + pageCSS + `</head><body>
 ` + navHead + `
 <h1>上传文件</h1>
 {{if .Msg}}<p class="ok">{{.Msg}}</p>{{end}}
 <form method="post" action="/api/upload" enctype="multipart/form-data">
-<label for="f">文件（wheel / sdist / Python 安装包 / npm tgz / Node 归档）</label>
+<label for="f">文件（wheel / sdist / Python 安装包 / npm tgz / Node 归档 / Go 归档 / Go 模块文件）</label>
 <input type="file" name="file" id="f" required>
 <label for="t">类型</label>
-<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option><option value="npm">npm 包（tgz / packument.json）</option><option value="node">node 安装包（tar.xz / zip / SHASUMS256.txt）</option></select>
-<label for="n">包名（pypi 留空自动解析；npm 必填，scoped 含 @scope/ 前缀）</label>
-<input type="text" name="name" id="n" placeholder="pypi 可留空；npm 必填">
+<select name="type" id="t"><option value="pypi">pypi 包（wheel/sdist）</option><option value="python">python 安装包</option><option value="npm">npm 包（tgz / packument.json）</option><option value="node">node 安装包（tar.xz / zip / SHASUMS256.txt）</option><option value="golang">golang 安装包（tar.gz / zip）</option><option value="gomod">gomod 模块文件（.mod / .zip / .info）</option></select>
+<label for="n">包名 / 模块路径（pypi 留空自动解析；npm、gomod 必填）</label>
+<input type="text" name="name" id="n" placeholder="pypi 可留空；npm 含 @scope/ 前缀；gomod 填模块路径">
 <label for="g">构建标签（python）或版本号（node）</label>
 <input type="text" name="tag" id="g" placeholder="python 填 8 位日期（如 20261021）；node 填版本（如 v22.14.0）">
 <button type="submit">上传</button>

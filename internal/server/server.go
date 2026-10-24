@@ -1,6 +1,6 @@
 // Package server 实现镜像服务端：PEP 503 simple 索引、CPython 安装包分发、
-// npm registry 协议、Node dist 目录分发与浏览页面。数据即 root 下的文件
-// 目录，无任何索引中间件。
+// npm registry 协议、Node dist 目录分发、Go 发行归档分发、Go module
+// proxy 协议与浏览页面。数据即 root 下的文件目录，无任何索引中间件。
 package server
 
 import (
@@ -24,6 +24,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"pkgmirror/internal/golang"
+	"pkgmirror/internal/gomod"
 	"pkgmirror/internal/node"
 	"pkgmirror/internal/npm"
 	"pkgmirror/internal/paths"
@@ -131,6 +133,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/npm/", s.handleNpm)
 	mux.HandleFunc("/node", s.handleNode)
 	mux.HandleFunc("/node/", s.handleNode)
+	mux.HandleFunc("/golang", s.handleGolang)
+	mux.HandleFunc("/golang/", s.handleGolang)
+	mux.HandleFunc("/goproxy/", s.handleGoProxy)
 	mux.HandleFunc("/browse", s.handleBrowse)
 	mux.HandleFunc("/browse/", s.handleBrowse)
 	mux.HandleFunc("/upload", s.handleUploadPage)
@@ -181,7 +186,7 @@ func logAccess(r *http.Request, event string, status int, size int64) {
 //
 //	@return error 监听或服务过程中的错误。
 func (s *Server) ListenAndServe() error {
-	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python"), filepath.Join(s.cfg.Root, "npm"), filepath.Join(s.cfg.Root, "node")} {
+	for _, d := range []string{filepath.Join(s.cfg.Root, "pypi"), filepath.Join(s.cfg.Root, "python"), filepath.Join(s.cfg.Root, "npm"), filepath.Join(s.cfg.Root, "node"), filepath.Join(s.cfg.Root, "golang"), filepath.Join(s.cfg.Root, "gomod")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("创建数据目录 %s 失败: %w", d, err)
 		}
@@ -228,8 +233,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	tags, _ := s.listPythonTags()
 	npmPkgs, _ := s.listNpmPackages()
 	nodeVers, _ := s.listNodeVersions()
+	goVers, _ := s.listGolangVersions()
+	goMods, _ := s.listGoModules()
 	// Host 取请求头，页面用它生成可直接复制的接入地址
-	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "NpmPackages": len(npmPkgs), "NodeVersions": len(nodeVers), "Host": r.Host})
+	render(w, indexTpl, map[string]any{"Packages": len(pkgs), "Tags": len(tags), "NpmPackages": len(npmPkgs), "NodeVersions": len(nodeVers), "GoVersions": len(goVers), "GoModules": len(goMods), "Host": r.Host})
 }
 
 // handleSimpleRoot 渲染 PEP 503 根索引（全部包名 anchor 列表）。
@@ -567,6 +574,358 @@ func (s *Server) handleNodeBrowse(w http.ResponseWriter, r *http.Request) {
 	render(w, nodeTpl, map[string]any{"Rows": rows, "Host": r.Host})
 }
 
+// handleGolang 提供 Go 发行归档分发：/golang/ 为浏览页，/golang/{file} 为
+// 归档下载。目录布局与官方 dl.google.com/go 一致（全部文件平铺在根下），
+// mise / asdf-golang 等版本管理器把镜像变量指向 /golang 即可直接安装。
+// 文件不存在时返回 404 + HTML 提示页；伴随的 .sha256 缓存文件同路由直接
+// 可得（mise 校验依赖它，格式与官方一致）。
+func (s *Server) handleGolang(w http.ResponseWriter, r *http.Request) {
+	filename := strings.Trim(strings.TrimPrefix(r.URL.Path, "/golang/"), "/")
+	if filename == "" {
+		s.handleGolangBrowse(w, r)
+		return
+	}
+	if !fileRe.MatchString(filename) {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.cfg.Root, "golang", filename)
+	info, err := os.Stat(path)
+	if err != nil {
+		logAccess(r, "缺失", http.StatusNotFound, 0)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		renderBody(w, golang404Tpl, map[string]any{"Path": r.URL.Path})
+		return
+	}
+	logAccess(r, "下载", http.StatusOK, info.Size())
+	http.ServeFile(w, r, path)
+}
+
+// listGolangVersions 列出 golang/ 下归档覆盖的版本集合（按 semver 降序）。
+//
+//	@return []string 版本号列表（如 go1.23.4）。
+//	@return error 目录读取失败时的错误。
+func (s *Server) listGolangVersions() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "golang"))
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var vers []string
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") || strings.HasPrefix(e.Name(), ".part-") {
+			continue
+		}
+		v := golang.VersionOf(e.Name())
+		if v != "" && !seen[v] {
+			seen[v] = true
+			vers = append(vers, v)
+		}
+	}
+	sort.Slice(vers, func(i, j int) bool { return golang.CompareVersion(vers[i], vers[j]) > 0 })
+	return vers, nil
+}
+
+// handleGolangBrowse 渲染 Go 安装包浏览页（全部文件按版本分组平铺）。
+func (s *Server) handleGolangBrowse(w http.ResponseWriter, r *http.Request) {
+	type row struct {
+		Version  string
+		Filename string
+		Size     int64
+	}
+	var rows []row
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "golang"))
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") || strings.HasPrefix(e.Name(), ".part-") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			rows = append(rows, row{Version: golang.VersionOf(e.Name()), Filename: e.Name(), Size: info.Size()})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if c := golang.CompareVersion(rows[i].Version, rows[j].Version); c != 0 {
+			return c > 0
+		}
+		return rows[i].Filename < rows[j].Filename
+	})
+	render(w, golangTpl, map[string]any{"Rows": rows, "Host": r.Host})
+}
+
+// goProxyNotFound 返回 404 + HTML 提示页，引导外网补下载。
+// module proxy 协议只按状态码判断（404/410 触发回退或报错），body 供人工排障。
+func (s *Server) goProxyNotFound(w http.ResponseWriter, r *http.Request) {
+	logAccess(r, "缺失", http.StatusNotFound, 0)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	renderBody(w, gomod404Tpl, map[string]any{"Path": r.URL.Path})
+}
+
+// handleGoProxy 提供 module proxy 协议子集（经现有 Basic auth 中间件）：
+//
+//	GET /goproxy/{模块}/@v/{版本}.{mod|zip|info}  静态文件
+//	GET /goproxy/{模块}/@v/list                   目录扫描合成
+//	GET /goproxy/{模块}/@latest                   最大版本的 info 合成
+//
+// 路径解析用 EscapedPath + PathUnescape（npm 的 %2F 同款手法）还原模块
+// 路径，再做 !x 大写解码；模块路径白名单校验防穿越。其余形式（含模块根
+// 与 /sumdb/ 转发探测）一律 404：协议未定义根端点，sumdb 探测得 404 后
+// go 命令自行直连或按 GOSUMDB=off 跳过。
+func (s *Server) handleGoProxy(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.EscapedPath(), "/goproxy/"), "/")
+	if rest == "" {
+		s.goProxyNotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(rest, "/@v/list"):
+		mod, err := decodeGoModule(strings.TrimSuffix(rest, "/@v/list"))
+		if err != nil {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		s.serveGoModList(w, r, mod)
+	case strings.HasSuffix(rest, "/@latest"):
+		mod, err := decodeGoModule(strings.TrimSuffix(rest, "/@latest"))
+		if err != nil {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		s.serveGoModLatest(w, r, mod)
+	default:
+		i := strings.LastIndex(rest, "/@v/")
+		if i < 0 {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		mod, err := decodeGoModule(rest[:i])
+		if err != nil {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		file := rest[i+len("/@v/"):]
+		if !gomod.FileRe.MatchString(file) {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		path := filepath.Join(s.cfg.Root, "gomod", filepath.FromSlash(mod), "@v", file)
+		info, err := os.Stat(path)
+		if err != nil {
+			s.goProxyNotFound(w, r)
+			return
+		}
+		logAccess(r, "下载", http.StatusOK, info.Size())
+		http.ServeFile(w, r, path)
+	}
+}
+
+// decodeGoModule 把代理路径中的模块段还原为原始模块路径。
+//
+// 依次执行 %XX 解码与 !x 大写解码，再做白名单校验；任一步失败即报错
+// （调用方按 404 处理）。
+//
+//	@param escaped string 代理路径中的模块段（! 转义、可能含 %XX）。
+//	@return string 原始模块路径。
+//	@return error 解码失败或路径非法时的错误。
+func decodeGoModule(escaped string) (string, error) {
+	unescaped, err := url.PathUnescape(escaped)
+	if err != nil {
+		return "", err
+	}
+	mod, err := gomod.UnescapeModulePath(unescaped)
+	if err != nil {
+		return "", err
+	}
+	if !gomod.ValidModulePath(mod) {
+		return "", fmt.Errorf("模块路径非法: %q", mod)
+	}
+	return mod, nil
+}
+
+// listGoModVersions 列出模块已镜像的版本集合（semver 降序）。
+//
+// @v 目录下的 .mod/.zip/.info 文件名取版本并集；目录不存在返回空。
+//
+//	@param mod string 原始模块路径。
+//	@return []string 版本串列表。
+//	@return error 目录读取失败时的错误。
+func (s *Server) listGoModVersions(mod string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.cfg.Root, "gomod", filepath.FromSlash(mod), "@v"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var vers []string
+	for _, e := range entries {
+		name := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".mod"), ".zip"), ".info")
+		if name == e.Name() || seen[name] {
+			continue
+		}
+		seen[name] = true
+		vers = append(vers, name)
+	}
+	sort.Slice(vers, func(i, j int) bool { return gomod.CompareVersion(vers[i], vers[j]) > 0 })
+	return vers, nil
+}
+
+// serveGoModList 合成 @v/list 响应：每行一个版本，降序。
+//
+//	@param w http.ResponseWriter 响应写入器。
+//	@param r *http.Request 请求。
+//	@param mod string 原始模块路径。
+func (s *Server) serveGoModList(w http.ResponseWriter, r *http.Request, mod string) {
+	vers, err := s.listGoModVersions(mod)
+	if err != nil || len(vers) == 0 {
+		s.goProxyNotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	for _, v := range vers {
+		fmt.Fprintln(w, v)
+	}
+}
+
+// serveGoModLatest 合成 @latest 响应：返回最大版本的 info。
+//
+// info 文件缺失时用版本号合成最小 JSON（Time 仅展示用，可省）。
+//
+//	@param w http.ResponseWriter 响应写入器。
+//	@param r *http.Request 请求。
+//	@param mod string 原始模块路径。
+func (s *Server) serveGoModLatest(w http.ResponseWriter, r *http.Request, mod string) {
+	vers, err := s.listGoModVersions(mod)
+	if err != nil || len(vers) == 0 {
+		s.goProxyNotFound(w, r)
+		return
+	}
+	latest := gomod.Latest(vers)
+	infoPath := filepath.Join(s.cfg.Root, "gomod", filepath.FromSlash(mod), "@v", latest+".info")
+	body, err := os.ReadFile(infoPath)
+	if err != nil {
+		// info 缺失兜底：Version 必填、Time 可缺（go 命令仅展示用）
+		body = []byte(fmt.Sprintf(`{"Version":%q}`, latest))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
+// goModRow 是 Go 模块浏览页与首页统计的一行数据。
+type goModRow struct {
+	Name  string
+	Count int
+	Size  int64
+}
+
+// listGoModules 递归列出 gomod/ 下全部模块（含 @v 子目录的目录即模块）及
+// 文件统计。
+//
+// 模块路径是任意深度的斜杠分隔串，存储为嵌套目录，只能递归发现；跳过
+// .sha256 缓存与 .part 临时文件。
+//
+//	@return []goModRow 按模块路径排序的列表。
+//	@return error gomod/ 目录读取失败时的错误。
+func (s *Server) listGoModules() ([]goModRow, error) {
+	var rows []goModRow
+	base := filepath.Join(s.cfg.Root, "gomod")
+	var walk func(dir string)
+	walk = func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		row := goModRow{}
+		hasV := false
+		for _, e := range entries {
+			if e.Name() == "@v" && e.IsDir() {
+				hasV = true
+				subs, err := os.ReadDir(filepath.Join(dir, "@v"))
+				if err != nil {
+					continue
+				}
+				for _, se := range subs {
+					if se.IsDir() || strings.HasSuffix(se.Name(), ".sha256") || strings.HasPrefix(se.Name(), ".part-") {
+						continue
+					}
+					info, err := se.Info()
+					if err != nil {
+						continue
+					}
+					row.Count++
+					row.Size += info.Size()
+				}
+				continue
+			}
+			if e.IsDir() && e.Name() != "@v" {
+				walk(filepath.Join(dir, e.Name()))
+			}
+		}
+		if hasV {
+			rel, err := filepath.Rel(base, dir)
+			if err == nil {
+				row.Name = filepath.ToSlash(rel)
+				rows = append(rows, row)
+			}
+		}
+	}
+	walk(base)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows, nil
+}
+
+// handleGomodBrowse 渲染 Go 模块浏览列表页。
+func (s *Server) handleGomodBrowse(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.listGoModules()
+	if err != nil {
+		http.Error(w, "读取 gomod 目录失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, gomodBrowseTpl, map[string]any{"Rows": rows, "Host": r.Host})
+}
+
+// handleGomodPkgPage 渲染单个 Go 模块的详情页（@v 文件列表）。
+//
+//	@param w http.ResponseWriter 响应写入器。
+//	@param r *http.Request 请求。
+//	@param mod string 原始模块路径；非法或未同步时 404。
+func (s *Server) handleGomodPkgPage(w http.ResponseWriter, r *http.Request, mod string) {
+	if !gomod.ValidModulePath(mod) {
+		http.NotFound(w, r)
+		return
+	}
+	dir := filepath.Join(s.cfg.Root, "gomod", filepath.FromSlash(mod), "@v")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		s.goProxyNotFound(w, r)
+		return
+	}
+	type fileRow struct {
+		Name string
+		Size int64
+	}
+	var files []fileRow
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".sha256") || strings.HasPrefix(e.Name(), ".part-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileRow{Name: e.Name(), Size: info.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	render(w, gomodPkgTpl, map[string]any{"Name": mod, "Escaped": gomod.EscapeModulePath(mod), "Files": files})
+}
+
 // handleNpm 提供 npm registry 协议：/npm/ 为浏览页，/npm/{name} 返回
 // packument（tarball 地址重写为本镜像），/npm/{name}/-/{file} 返回 tarball。
 //
@@ -769,6 +1128,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		s.handleNpmPkgPage(w, r, name)
 		return
 	}
+	if rest == "gomod" {
+		s.handleGomodBrowse(w, r)
+		return
+	}
+	// gomod 详情：模块路径本身含多段斜杠，取 gomod/ 后的全部（含斜杠）
+	if name, ok := strings.CutPrefix(rest, "gomod/"); ok && name != "" {
+		s.handleGomodPkgPage(w, r, name)
+		return
+	}
 	if rest == "" {
 		type row struct {
 			Name  string
@@ -819,7 +1187,7 @@ type uploadResult struct {
 
 // handleUploadAPI 处理上传（客户端与网页共用）。
 //
-// multipart 表单字段：type（pypi|python|npm|node）、name（pypi/npm 包名）、
+// multipart 表单字段：type（pypi|python|npm|node|golang|gomod）、name（pypi/npm 包名或 gomod 模块路径）、
 // tag（python 构建标签或 node 版本号）、sha256（期望哈希，可选）、file（文件
 // 本体）。落盘前校验期望哈希；目标已存在且哈希一致时幂等跳过，不一致时返回
 // 409 拒绝覆盖。写入采用 .part 临时文件 + rename 原子落盘。
@@ -895,8 +1263,27 @@ func (s *Server) handleUploadAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dest = filepath.Join("node", tag, filename)
+	case "golang":
+		// flat 布局：归档文件名即含版本（go1.23.4.linux-amd64.tar.gz），
+		// 不使用 name/tag；fileRe 白名单已挡住路径分隔符
+		dest = filepath.Join("golang", filename)
+	case "gomod":
+		if name == "" {
+			// 版本文件名（v1.2.3.mod）不含模块路径，无法从文件名反推
+			http.Error(w, "gomod 上传必须提供模块路径（name 字段）", http.StatusBadRequest)
+			return
+		}
+		if !gomod.ValidModulePath(name) {
+			http.Error(w, "gomod 模块路径包含非法字符", http.StatusBadRequest)
+			return
+		}
+		if !gomod.FileRe.MatchString(filename) {
+			http.Error(w, "gomod 文件名必须是 版本.mod/.zip/.info 形式（如 v1.9.1.zip）", http.StatusBadRequest)
+			return
+		}
+		dest = filepath.Join("gomod", filepath.FromSlash(name), "@v", filename)
 	default:
-		http.Error(w, "type 必须是 pypi、python、npm 或 node", http.StatusBadRequest)
+		http.Error(w, "type 必须是 pypi、python、npm、node、golang 或 gomod", http.StatusBadRequest)
 		return
 	}
 

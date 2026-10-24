@@ -18,6 +18,12 @@ type ClientConfig struct {
 	// NodeDistURL 是 Node.js dist 根地址（download node 使用，官方布局的
 	// 镜像源均可，如 npmmirror），空表示未配置。
 	NodeDistURL string `toml:"node-dist-url"`
+	// GolangDistURL 是 Go 发行归档根地址（download golang 使用，flat 同
+	// 布局的镜像源均可，如 mirrors.aliyun.com/golang），空表示未配置。
+	GolangDistURL string `toml:"golang-dist-url"`
+	// GoProxyURL 是上游 module proxy 地址（download gomod 使用，如
+	// goproxy.cn），空表示未配置。
+	GoProxyURL string `toml:"goproxy"`
 	// GitHubPrefix 是 GitHub 反代前缀，空表示未配置。
 	GitHubPrefix string `toml:"github-prefix"`
 	// Proxy 是 HTTP 代理地址（如 http://127.0.0.1:7890），空表示未配置。

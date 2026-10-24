@@ -13,6 +13,14 @@ index-url = "https://pypi.org/simple"
 # 优先级：--dist-url 参数 > 本文件 > NODE_DIST_URL 环境变量 > 官方源
 # node-dist-url = "https://cdn.npmmirror.com/binaries/node"
 
+# Go 发行归档根地址（download golang 使用，flat 同布局的镜像源均可）
+# 优先级：--dist-url 参数 > 本文件 > GOLANG_DIST_URL 环境变量 > 官方源
+# golang-dist-url = "https://mirrors.aliyun.com/golang"
+
+# 上游 Go module proxy 地址（download gomod 使用）
+# 优先级：--goproxy 参数 > 本文件 > GOPROXY 环境变量（取首个 URL 段）> 官方源
+# goproxy = "https://goproxy.cn"
+
 # GitHub 反代前缀（uv 元数据与 CPython 安装包托管在 GitHub releases）
 # 优先级：--github-prefix 参数 > 本文件 > GITHUB_PREFIX 环境变量 > 直连
 # github-prefix = "https://ghproxy.net/"

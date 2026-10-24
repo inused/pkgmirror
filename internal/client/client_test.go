@@ -152,3 +152,110 @@ func TestFetchAndRecordNode(t *testing.T) {
 		t.Fatalf("清单应通过契约校验: %v", err)
 	}
 }
+
+func TestResolveGoProxy(t *testing.T) {
+	// 命令行 > 配置 > 环境；GOPROXY 形式的值取首个 URL 段、忽略 direct
+	os.Setenv("GOPROXY", "https://goproxy.cn,https://proxy.golang.org,direct")
+	defer os.Unsetenv("GOPROXY")
+	if got := ResolveGoProxy("", ""); got != "https://goproxy.cn" {
+		t.Errorf("环境变量兜底 = %q，应为 https://goproxy.cn", got)
+	}
+	if got := ResolveGoProxy("https://a.cn/", ""); got != "https://a.cn" {
+		t.Errorf("命令行优先且去尾斜杠 = %q", got)
+	}
+	if got := ResolveGoProxy("", "https://b.cn"); got != "https://b.cn" {
+		t.Errorf("配置优先于环境 = %q", got)
+	}
+	// 全为 direct/off 时落官方默认
+	os.Setenv("GOPROXY", "direct")
+	if got := ResolveGoProxy("", ""); got != DefaultGoProxy {
+		t.Errorf("direct-only 环境 = %q，应为官方默认", got)
+	}
+}
+
+func TestSplitGoRefs(t *testing.T) {
+	// go.sum + 命令行条目：精确进静态集合，裸名/@latest/前缀进待解析引用
+	dir := t.TempDir()
+	sum := "github.com/spf13/cobra v1.8.1 h1:x=\ngithub.com/spf13/cobra v1.8.1/go.mod h1:y=\nexample.com/b v2.0.0+incompatible h1:z=\n"
+	path := filepath.Join(dir, "go.sum")
+	os.WriteFile(path, []byte(sum), 0o644)
+	refs, static, err := splitGoRefs(DownloadGomodOptions{GoSumFile: path, Modules: []string{
+		"example.com/a",                 // 裸名 → latest
+		"example.com/c@latest",          // 显式 latest
+		"example.com/d@v1.8",            // minor 前缀
+		"example.com/a@v1.0.0",          // 精确（与裸名同名不同版本，允许并存）
+		"github.com/spf13/cobra@v1.8.1", // 精确重复，去重
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(static) != 3 {
+		t.Fatalf("静态目标应 3 个（go.sum 两模块 + 精确 a@v1.0.0），得到 %+v", static)
+	}
+	wantStatic := []string{"example.com/a@v1.0.0", "example.com/b@v2.0.0+incompatible", "github.com/spf13/cobra@v1.8.1"}
+	for i, mv := range static {
+		if got := mv.Module + "@" + mv.Version; got != wantStatic[i] {
+			t.Errorf("静态第 %d = %s，应为 %s", i, got, wantStatic[i])
+		}
+	}
+	if len(refs) != 3 {
+		t.Fatalf("待解析引用应 3 个，得到 %+v", refs)
+	}
+	for i, want := range []string{"", "latest", "v1.8"} {
+		if refs[i].Ref != want {
+			t.Errorf("引用第 %d = %+v，Ref 应为 %q", i, refs[i], want)
+		}
+	}
+	// 非法引用（裸名是合法形式，会走 @latest 解析，由上游 404 报模块不存在）
+	for _, bad := range []string{"../evil@v1.0.0", "bad name@v1.0.0"} {
+		if _, _, err := splitGoRefs(DownloadGomodOptions{Modules: []string{bad}}); err == nil {
+			t.Errorf("非法条目 %q 应报错", bad)
+		}
+	}
+	if _, _, err := splitGoRefs(DownloadGomodOptions{Modules: []string{"m@^1.2"}}); err == nil {
+		t.Error("semver range 引用应报错（支持 latest/前缀/精确）")
+	}
+	// 空输入返回双空
+	refs, static, err = splitGoRefs(DownloadGomodOptions{})
+	if err != nil || len(refs) != 0 || len(static) != 0 {
+		t.Errorf("空输入应得双空集合: %+v %+v %v", refs, static, err)
+	}
+}
+
+func TestResolveGoRef(t *testing.T) {
+	// httptest 模拟上游 proxy 的 @latest 与 @v/list 端点
+	mux := http.NewServeMux()
+	mux.HandleFunc("/example.com/a/@latest", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"Version":"v1.10.0","Time":"2026-01-01T00:00:00Z"}`)
+	})
+	mux.HandleFunc("/example.com/d/@v/list", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "v2.0.0-rc1\nv1.9.2\nv1.8.0\nv1.8.3-rc1\nv1.8.1\n")
+	})
+	mux.HandleFunc("/example.com/nope/@latest", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx := context.Background()
+
+	// 裸名与 latest 等价：取 @latest 的 Version
+	for _, ref := range []string{"", "latest"} {
+		ver, err := resolveGoRef(ctx, srv.Client(), srv.URL, goRef{Module: "example.com/a", Ref: ref})
+		if err != nil || ver != "v1.10.0" {
+			t.Errorf("resolve(%q) = %q, %v，应为 v1.10.0", ref, ver, err)
+		}
+	}
+	// minor 前缀：取该线最新稳定版（排除 rc）
+	ver, err := resolveGoRef(ctx, srv.Client(), srv.URL, goRef{Module: "example.com/d", Ref: "v1.8"})
+	if err != nil || ver != "v1.8.1" {
+		t.Errorf("v1.8 前缀 = %q, %v，应为 v1.8.1", ver, err)
+	}
+	// 无匹配前缀报错
+	if _, err := resolveGoRef(ctx, srv.Client(), srv.URL, goRef{Module: "example.com/d", Ref: "v3"}); err == nil {
+		t.Error("无 v3 前缀应报错")
+	}
+	// 模块不存在
+	if _, err := resolveGoRef(ctx, srv.Client(), srv.URL, goRef{Module: "example.com/nope"}); err == nil {
+		t.Error("不存在的模块应报错")
+	}
+}

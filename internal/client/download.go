@@ -37,6 +37,12 @@ type DownloadCommon struct {
 	// DistURL 是 Node.js dist 根地址（已解析配置文件与环境变量，仅 download node
 	// 使用），空表示未配置（RunDownloadNode 回退官方源）。
 	DistURL string
+	// GoDistURL 是 Go 发行归档根地址（已解析配置文件与环境变量，仅
+	// download golang 使用），空表示未配置（RunDownloadGolang 回退官方源）。
+	GoDistURL string
+	// GoProxyURL 是上游 module proxy 地址（已解析配置文件与 GOPROXY 环境变量，
+	// 仅 download gomod 使用），空表示未配置（RunDownloadGomod 回退官方源）。
+	GoProxyURL string
 	// GitHubPrefix 是 GitHub 反代前缀，拼在完整 URL 之前，空为直连。
 	GitHubPrefix string
 	// Proxy 是 HTTP 代理地址（如 http://127.0.0.1:7890），空表示走
@@ -303,6 +309,14 @@ func fetchAndRecord(ctx context.Context, client *http.Client, url, dest, sha, ou
 	case strings.HasPrefix(rel, "node/"):
 		entry.Type = "node"
 		entry.Tag = filepath.Base(filepath.Dir(dest))
+	case strings.HasPrefix(rel, "golang/"):
+		// flat 布局：文件名即含版本，不使用 name/tag
+		entry.Type = "golang"
+	case strings.HasPrefix(rel, "gomod/"):
+		// rel 形如 gomod/{模块}/@v/{文件}，模块路径是中间全部段
+		// （模块路径可含多段斜杠）
+		entry.Type = "gomod"
+		entry.Name = strings.TrimSuffix(strings.TrimPrefix(rel, "gomod/"), "/@v/"+entry.Filename)
 	default:
 		entry.Type = "pypi"
 		entry.Name = filepath.Base(filepath.Dir(dest))

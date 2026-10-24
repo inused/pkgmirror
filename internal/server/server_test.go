@@ -19,7 +19,7 @@ import (
 func newTestServer(t *testing.T, users map[string]string) (*Server, *httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
-	for _, d := range []string{"pypi", "python", "npm", "node"} {
+	for _, d := range []string{"pypi", "python", "npm", "node", "golang", "gomod"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -465,7 +465,7 @@ func TestNavGroupAndFilter(t *testing.T) {
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
 	html := string(body)
-	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><a class="cut" href="/upload">上传</a></nav>`)
+	pyPos := strings.Index(html, `<nav><a href="/">首页</a><b class="cut">Python</b><a href="/python/">安装包</a><a href="/browse/">PyPI 包</a><b class="cut">Node.js</b><a href="/node/">安装包</a><a href="/npm/">npm 包</a><b class="cut">Go</b><a href="/golang/">安装包</a><a href="/browse/gomod/">Go 模块</a><a class="cut" href="/upload">上传</a></nav>`)
 	if pyPos < 0 || strings.Contains(html, `<b>pkgmirror</b>`) {
 		t.Errorf("导航分组结构不符:\n%s", html)
 	}
@@ -537,11 +537,156 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestUploadGolangAndServe(t *testing.T) {
+	_, ts, root := newTestServer(t, nil)
+	body := []byte("fake-go-archive")
+	resp := postUpload(t, ts.URL, "", "", "golang", "", "", "", "go1.23.4.linux-amd64.tar.gz", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("golang 上传应 200，得到 %d", resp.StatusCode)
+	}
+	// flat 落盘 + .sha256 缓存（mise 校验依赖该伴随文件）
+	if _, err := os.Stat(filepath.Join(root, "golang", "go1.23.4.linux-amd64.tar.gz")); err != nil {
+		t.Fatal("归档未落盘到 golang/ 根下")
+	}
+	sum, _ := os.ReadFile(filepath.Join(root, "golang", "go1.23.4.linux-amd64.tar.gz.sha256"))
+	if !strings.HasPrefix(string(sum), "d0e6c1f7a7d1ba2d1f") && !strings.Contains(string(sum), "fake") {
+		// 具体哈希不固定断言，只确认非空 hex 行存在
+		if len(strings.TrimSpace(string(sum))) != 64 {
+			t.Fatalf(".sha256 缓存应为 64 位 hex，得到 %q", string(sum))
+		}
+	}
+	// 归档可下载、伴随 .sha256 可下载（同一路由）
+	for _, path := range []string{"/golang/go1.23.4.linux-amd64.tar.gz", "/golang/go1.23.4.linux-amd64.tar.gz.sha256"} {
+		resp, _ = http.Get(ts.URL + path)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s 应 200，得到 %d", path, resp.StatusCode)
+		}
+	}
+	// 缺失 404 提示页
+	resp, _ = http.Get(ts.URL + "/golang/go1.20.0.linux-amd64.tar.gz")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("缺失归档应 404，得到 %d", resp.StatusCode)
+	}
+	// 浏览页含文件名
+	resp, _ = http.Get(ts.URL + "/golang/")
+	page, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(page), "go1.23.4.linux-amd64.tar.gz") {
+		t.Fatal("浏览页应列出归档文件")
+	}
+	// 路径穿越：multipart 已把文件名剥为基名（与 PyPI 分支使用相同规则），
+	// 落盘的是 evil.tar.gz 而非目录外文件
+	resp = postUpload(t, ts.URL, "", "", "golang", "", "", "", "../evil.tar.gz", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("剥基名后应 200，得到 %d", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(root, "golang", "evil.tar.gz")); err != nil {
+		t.Fatal("应按基名落盘在 golang/ 内")
+	}
+}
+
+func TestGoproxyServe(t *testing.T) {
+	_, ts, root := newTestServer(t, nil)
+	dir := filepath.Join(root, "gomod", "github.com", "Azure", "go-ansiterm", "@v")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "v1.0.0.mod"), []byte("module github.com/Azure/go-ansiterm\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "v1.0.0.zip"), []byte("zip-bytes"), 0o644)
+	os.WriteFile(filepath.Join(dir, "v1.1.0.mod"), []byte("module github.com/Azure/go-ansiterm\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "v1.1.0.info"), []byte(`{"Version":"v1.1.0","Time":"2024-01-01T00:00:00Z"}`), 0o644)
+
+	// 大写模块：URL 用 !azure 转义，命中磁盘上的原始大小写目录
+	resp, err := http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.zip")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("zip 应 200: %v %d", err, resp.StatusCode)
+	}
+	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v1.0.0.mod")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mod 应 200，得到 %d", resp.StatusCode)
+	}
+	// @v/list：版本并集降序
+	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/list")
+	list, _ := io.ReadAll(resp.Body)
+	if strings.TrimSpace(string(list)) != "v1.1.0\nv1.0.0" {
+		t.Fatalf("@v/list 应为 v1.1.0/v1.0.0 两行，得到 %q", string(list))
+	}
+	// @latest：最大版本的 info 原文
+	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@latest")
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"Version":"v1.1.0"`) {
+		t.Fatalf("@latest 应返回 v1.1.0 的 info，得到 %q", string(body))
+	}
+	// 缺失 404（协议回退语义）
+	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!azure/go-ansiterm/@v/v9.9.9.zip")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("缺失版本应 404，得到 %d", resp.StatusCode)
+	}
+	// 未知模块 404
+	resp, _ = http.Get(ts.URL + "/goproxy/example.com/nope/@v/v1.0.0.mod")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("未知模块应 404，得到 %d", resp.StatusCode)
+	}
+	// 非法转义（! 后大写）404
+	resp, _ = http.Get(ts.URL + "/goproxy/github.com/!Azure/x/@v/v1.0.0.mod")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("非法转义应 404，得到 %d", resp.StatusCode)
+	}
+	// sumdb 探测不实现：404（go 命令据此直连或按 GOSUMDB=off 跳过）
+	resp, _ = http.Get(ts.URL + "/goproxy/sumdb/sum.golang.org/supported")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("sumdb 探测应 404，得到 %d", resp.StatusCode)
+	}
+	// 浏览页（递归发现模块）与详情页（链接含转义路径）
+	resp, _ = http.Get(ts.URL + "/browse/gomod/")
+	page, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(page), "github.com/Azure/go-ansiterm") {
+		t.Fatal("模块浏览页应列出模块（原始大小写）")
+	}
+	resp, _ = http.Get(ts.URL + "/browse/gomod/github.com/Azure/go-ansiterm/")
+	page, _ = io.ReadAll(resp.Body)
+	if !strings.Contains(string(page), "/goproxy/github.com/!azure/go-ansiterm/@v/v1.1.0.info") {
+		t.Fatal("详情页链接应指向转义后的协议端点")
+	}
+}
+
+func TestUploadGomodValidation(t *testing.T) {
+	_, ts, root := newTestServer(t, nil)
+	body := []byte("mod-content")
+	// 正常：name 必填，落盘 @v 子目录
+	sum := sha256.Sum256(body)
+	resp := postUpload(t, ts.URL, "", "", "gomod", "github.com/spf13/cobra", "", hex.EncodeToString(sum[:]), "v1.8.1.mod", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gomod 上传应 200，得到 %d", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(root, "gomod", "github.com", "spf13", "cobra", "@v", "v1.8.1.mod")); err != nil {
+		t.Fatal("未落盘到 gomod/{模块}/@v/")
+	}
+	// 缺 name 400
+	resp = postUpload(t, ts.URL, "", "", "gomod", "", "", "", "v1.8.1.mod", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺模块路径应 400，得到 %d", resp.StatusCode)
+	}
+	// 非法模块路径 400
+	resp = postUpload(t, ts.URL, "", "", "gomod", "../evil", "", "", "v1.8.1.mod", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法模块路径应 400，得到 %d", resp.StatusCode)
+	}
+	// 非法文件名（非版本三件套）400
+	resp = postUpload(t, ts.URL, "", "", "gomod", "a/b", "", "", "evil.sh", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法文件名应 400，得到 %d", resp.StatusCode)
+	}
+	// 首页统计含模块数
+	resp, _ = http.Get(ts.URL + "/")
+	page, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(page), "个 Go 模块") {
+		t.Fatal("首页应含 Go 模块统计")
+	}
+}
+
 // TestNavCurrentScript 验证导航高亮：全部人用页面均输出 cur 样式与
 // 内联匹配脚本（匹配逻辑由浏览器执行，这里只验证注入完整）。
 func TestNavCurrentScript(t *testing.T) {
 	_, ts, _ := newTestServer(t, nil)
-	pages := []string{"/", "/python/", "/browse/", "/npm/", "/node/", "/upload"}
+	pages := []string{"/", "/python/", "/browse/", "/npm/", "/node/", "/golang/", "/browse/gomod/", "/upload"}
 	for _, p := range pages {
 		resp, err := http.Get(ts.URL + p)
 		if err != nil {
