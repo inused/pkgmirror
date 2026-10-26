@@ -1,5 +1,5 @@
 #!/bin/sh
-# 交叉编译 pkgmirror 全平台产物到 dist/，并附带示例配置文件。
+# 交叉编译四个平台到 dist/，发布包与校验清单输出到 dist/release/。
 # 用法: scripts/build.sh（需 Go 1.20.7）
 set -e
 cd "$(dirname "$0")/.."
@@ -18,6 +18,7 @@ for target in windows/amd64 linux/amd64 linux/arm64 darwin/arm64; do
     echo "已构建 dist/pkgmirror-$os-$arch$ext"
 done
 
-# 附带示例配置（resources/ 存放项目附属资源，扩展新镜像时新增对应示例）
+# 将服务端与客户端示例配置复制到产物目录。
 cp resources/server.example.toml resources/client.example.toml dist/
-echo "已附带示例配置到 dist/"
+cp README.md LICENSE THIRD_PARTY_NOTICES dist/
+GOOS= GOARCH= go run ./scripts/release
