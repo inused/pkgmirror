@@ -6,7 +6,8 @@ import (
 )
 
 // testIndex 是覆盖选择逻辑的模拟索引：22 线含 LTS 与非 LTS 混排，
-// 21 线无 arm64 产物（验证缺失报错），20 线已停止维护。
+// 21 线无 arm64 产物（验证矩阵不全时跳过与整体空报错，对应官方 v14/v18），
+// 20 线已停止维护。
 var testIndex = []Release{
 	{Version: "v22.14.0", LTS: "Jod", Files: []string{"linux-x64", "linux-arm64", "osx-x64-tar", "osx-arm64-tar", "win-x64-zip", "win-arm64-zip", "linux-x64-musl", "win-x64-exe", "src"}},
 	{Version: "v22.13.1", LTS: "Jod", Files: []string{"linux-x64", "linux-arm64", "osx-x64-tar", "osx-arm64-tar", "win-x64-zip", "win-arm64-zip"}},
@@ -150,13 +151,48 @@ func TestSelectMissing(t *testing.T) {
 	if _, err := Select(testIndex, []Spec{{23, -1, -1}}, false, nil, nil); err == nil {
 		t.Fatal("不存在的版本应报错")
 	}
-	// 21.7.3 无 linux-arm64 归档，应报标识缺失
+	// 21.7.3 无任何 arm64 归档：显式只要 aarch64 时筛选结果为空，应报错
 	if _, err := Select(testIndex, []Spec{{21, -1, -1}}, false, []string{"linux"}, []string{"aarch64"}); err == nil {
-		t.Fatal("缺失平台归档应报错")
+		t.Fatal("筛选结果为空应报错")
+	}
+	// 无目标版本（调用方前置校验，Select 层兜底）
+	if _, err := Select(testIndex, nil, false, nil, nil); err == nil {
+		t.Fatal("无目标版本应报错")
 	}
 	// 无 LTS 时报错
 	if _, err := Select(testIndex[:0], nil, true, nil, nil); err == nil {
 		t.Fatal("空索引取 LTS 应报错")
+	}
+}
+
+func TestSelectIncompleteMatrix(t *testing.T) {
+	// 21.7.3 只有 x64 产物：默认全平台展开时缺失的 arm64 组合安静跳过，
+	// 得三个系统的 x64 归档
+	files, err := Select(testIndex, []Spec{{21, -1, -1}}, false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []File{
+		{"v21.7.3", "node-v21.7.3-darwin-x64.tar.xz"},
+		{"v21.7.3", "node-v21.7.3-linux-x64.tar.xz"},
+		{"v21.7.3", "node-v21.7.3-win-x64.zip"},
+	}
+	if len(files) != 3 {
+		t.Fatalf("应得 3 个归档，实际 %d: %v", len(files), files)
+	}
+	for i, f := range want {
+		if files[i] != f {
+			t.Fatalf("结果 = %v，应为 %v", files, want)
+		}
+	}
+	// 显式混合组合部分存在：收 osx-x64 与 linux-x64，跳过缺失的 arm64 组合
+	files, err = Select(testIndex, []Spec{{21, -1, -1}}, false, []string{"linux", "darwin"}, []string{"x86_64", "aarch64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].Filename != "node-v21.7.3-darwin-x64.tar.xz" ||
+		files[1].Filename != "node-v21.7.3-linux-x64.tar.xz" {
+		t.Fatalf("部分存在的组合应只收存在的归档: %v", files)
 	}
 }
 

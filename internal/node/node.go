@@ -228,16 +228,19 @@ func fileName(version, platform, arch string) (string, bool) {
 // 范围最新（"22" 取 22 线最新，"22.11" 取 22.11 线最新 patch），指定时
 // 精确匹配，匹配不到报错。lts 为 true 时追加当前最新 LTS 发布。
 // platforms/archs 非空时按内部名过滤（darwin/macos、amd64/arm64 为别名），
-// 空为全平台全架构。目标只取可移植归档（tar.xz/zip），按整段 files 标识
-// 精确匹配，musl、安装器、src 等变体自然排除；标识缺失时报错。
+// 空为默认主流平台组合（linux/macos/windows × x64/arm64）。目标只取可
+// 移植归档（tar.xz/zip），按整段 files 标识精确匹配，musl、安装器、src
+// 等变体自然排除。低版本官方产物矩阵不全（如 v14 无 osx-arm64-tar、
+// v18 无 win-arm64-zip），缺失的组合安静跳过（与 golang 分支语义一致）；
+// 筛选结果整体为空时报错，并附首个目标版本的产物列表辅助诊断。
 //
 //	@param rls []Release index.json 的发布列表。
 //	@param specs []Spec 目标版本列表。
 //	@param lts bool 是否追加当前最新 LTS。
-//	@param platforms []string 平台过滤列表（linux/macos/windows）；空为全部。
-//	@param archs []string 架构过滤列表（x86_64/aarch64）；空为全部。
+//	@param platforms []string 平台过滤列表（linux/macos/windows）；空为默认组合。
+//	@param archs []string 架构过滤列表（x86_64/aarch64）；空为默认组合。
 //	@return []File 筛选结果，版本降序、文件名升序。
-//	@return error 版本或平台产物匹配不到时的错误。
+//	@return error 版本匹配不到、无目标版本或筛选结果为空时的错误。
 func Select(rls []Release, specs []Spec, lts bool, platforms, archs []string) ([]File, error) {
 	var osList, archList []string
 	for _, p := range platforms {
@@ -323,6 +326,8 @@ func Select(rls []Release, specs []Spec, lts bool, platforms, archs []string) ([
 		rel := releaseOf(rls, v)
 		for _, os := range osList {
 			for _, arch := range archList {
+				// 产物矩阵不全的版本（如 v14 无 osx-arm64-tar）缺失的
+				// 组合跳过，只收实际存在的；与 golang 分支的过滤式语义一致
 				id, _ := fileID(os, arch)
 				found := false
 				for _, f := range rel.Files {
@@ -332,12 +337,21 @@ func Select(rls []Release, specs []Spec, lts bool, platforms, archs []string) ([
 					}
 				}
 				if !found {
-					return nil, fmt.Errorf("%s 没有可移植归档标识 %s（该版本产物: %v）", v, id, rel.Files)
+					continue
 				}
 				name, _ := fileName(v, os, arch)
 				out = append(out, File{Version: v, Filename: name})
 			}
 		}
+	}
+	// 首个目标版本（semver 最大）的产物列表随错误给出，显式指定平台撞上
+	// 官方未发布的组合时可直接看出缺什么
+	if len(out) == 0 {
+		if len(versions) == 0 {
+			return nil, fmt.Errorf("没有目标版本（版本参数与 --lts 至少给一个）")
+		}
+		return nil, fmt.Errorf("筛选结果为空：平台/架构组合在这些版本中没有可移植归档（%s 产物: %v）",
+			versions[0], releaseOf(rls, versions[0]).Files)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if c := CompareVersion(out[i].Version, out[j].Version); c != 0 {

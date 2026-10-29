@@ -41,7 +41,10 @@ pkgmirror download node <版本>... [--lts] [--platform linux] [--arch x86_64]
   | macos | `osx-x64-tar` → `node-vX-darwin-x64.tar.xz` | `osx-arm64-tar` → `...darwin-arm64.tar.xz` |
   | windows | `win-x64-zip` → `node-vX-win-x64.zip` | `win-arm64-zip` → `...win-arm64.zip` |
 
-  按整段标识精确匹配可移植归档，筛选结果为空时报错；
+  按整段标识精确匹配可移植归档，musl、安装器与 src 变体自然排除；
+  官方产物矩阵不全的版本（v14 无 darwin-arm64、v18 及以下无 win-arm64）
+  缺失组合安静跳过（与 golang 分支的过滤式语义一致），筛选结果整体为空时
+  报错并附该版本产物列表；
 - `--dist-url` 三级来源：命令行 > client.toml `node-dist-url` >
   `NODE_DIST_URL` > `https://nodejs.org/dist`（国内可配
   `https://cdn.npmmirror.com/binaries/node`）；
@@ -111,7 +114,8 @@ Volta 不支持自定义镜像，其用户走浏览页手工下载解压。
 
 - 单元测试：index.json 解析与目标选择（主版本最新 patch / minor / 精确 /
   --lts / 无目标报错）、平台→标识→文件名映射（darwin 命名差异、musl 与
-  7z/exe 排除、缺失标识报错）、SHASUMS256.txt 解析与校验、上传 type=node
+  7z/exe 排除、产物矩阵不全时跳过缺失组合与整体空报错）、SHASUMS256.txt
+  解析与校验、上传 type=node
   的版本格式与路径校验、路由与浏览页数据；
 - 集成冒烟（真实网络）：`download node 22 --platform linux` → upload →
   curl 校验 `/mirror/node/vX/` 归档与 SHASUMS256.txt → 有 nvm 环境时设
@@ -123,6 +127,7 @@ Volta 不支持自定义镜像，其用户走浏览页手工下载解压。
 1. **管理器凭据差异**：nvm（curl）与 n 明确支持 URL 内嵌凭据；nvm-windows
    与 mise 对内嵌凭据未确认，启用 Basic auth 后若返回 401，检查管理器的
    认证配置，或登录浏览页手工下载。
-2. **归档体积**：单版本全平台约 150MB（6 归档），按需 `--platform` 控制。
+2. **归档体积**：单版本全平台约 150MB（6 归档；低版本官方产物不全时
+   相应减少），按需 `--platform` 控制。
 3. **--lts 语义**：取当前最大 LTS 版本，不区分代号线；需要特定 LTS 线
    （如 Jod）时直接给主版本号。
