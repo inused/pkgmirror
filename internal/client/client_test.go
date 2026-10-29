@@ -294,3 +294,45 @@ func TestRunDelete(t *testing.T) {
 		t.Errorf("404 应原样传播, 得到 %v", err)
 	}
 }
+
+func TestMatchDists(t *testing.T) {
+	files := []pypi.File{
+		{Filename: "demo-1.0-py3-none-any.whl", Yanked: true, YankedReason: "broken wheel"},
+		{Filename: "demo-1.0.tar.gz"},
+		{Filename: "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl"},
+		{Filename: "demo-0.9.tar.gz"},
+	}
+	req := pypi.Req{Name: "demo", Version: "1.0"}
+
+	// 有非撤回文件时必须忽略撤回文件（PEP 592 MUST 条款）
+	got := matchDists(files, req, []int{11, 12}, nil, nil, false)
+	if len(got) != 2 {
+		t.Fatalf("排除撤回后命中 %d 个文件, 期望 2（sdist 与兼容 wheel）: %+v", len(got), got)
+	}
+	if got[0].Filename != "demo-1.0.tar.gz" || got[1].Filename != "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl" {
+		t.Errorf("命中文件错误: %+v", got)
+	}
+
+	// includeYanked=true 保留撤回文件，供仅撤回文件匹配时回退
+	got = matchDists(files, req, []int{11, 12}, nil, nil, true)
+	if len(got) != 3 || !got[0].Yanked {
+		t.Errorf("回退模式应包含撤回文件: %+v", got)
+	}
+
+	// 版本不符一律排除
+	got = matchDists(files, pypi.Req{Name: "demo", Version: "0.9"}, []int{12}, nil, nil, true)
+	if len(got) != 1 || got[0].Filename != "demo-0.9.tar.gz" {
+		t.Errorf("0.9 应只命中自身 sdist: %+v", got)
+	}
+
+	// wheel 不兼容目标 Python 版本时仅剩 sdist
+	got = matchDists(files, req, []int{13}, nil, nil, true)
+	if len(got) != 2 {
+		t.Fatalf("Python 3.13 应排除 cp311 非 abi3 wheel: %+v", got)
+	}
+	for _, f := range got {
+		if f.Filename == "demo-1.0-cp311-cp311-manylinux_2_17_x86_64.whl" {
+			t.Errorf("cp311 wheel 不应命中 3.13: %+v", got)
+		}
+	}
+}

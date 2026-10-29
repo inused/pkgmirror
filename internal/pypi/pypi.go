@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -81,10 +82,11 @@ func ParseLock(r io.Reader) ([]Req, error) {
 
 // File 描述 simple 索引中的一个发行文件。
 type File struct {
-	Filename string // 文件名，如 requests-2.31.0-py3-none-any.whl
-	URL      string // 下载直链
-	SHA256   string // 十六进制小写哈希；来源缺失时为空串
-	Yanked   bool   // 是否已被上游撤回；撤回的文件跳过下载
+	Filename     string // 文件名，如 requests-2.31.0-py3-none-any.whl
+	URL          string // 下载直链
+	SHA256       string // 十六进制小写哈希；来源缺失时为空串
+	Yanked       bool   // 是否已被上游撤回（PEP 592）；JSON yanked 为真值或 HTML data-yanked 属性存在时为 true
+	YankedReason string // 撤回原因；来源为布尔 yanked 或无值 data-yanked 属性时为空串
 }
 
 // simpleJSON 是 PEP 691 JSON simple 响应中用到的字段子集。
@@ -94,12 +96,41 @@ type simpleJSON struct {
 		URL            string            `json:"url"`
 		Hashes         map[string]string `json:"hashes"`
 		RequiresPython *string           `json:"requires-python"`
-		Yanked         bool              `json:"yanked"`
+		Yanked         yankedValue       `json:"yanked"`
 	} `json:"files"`
 }
 
-// anchorRe 从 PEP 503 HTML 索引中提取文件链接。
-var anchorRe = regexp.MustCompile(`<a\s+href="([^"]+)"[^>]*>([^<]+)</a>`)
+// yankedValue 是 PEP 691 JSON 索引的 yanked 字段值：布尔 false 表示未撤回；
+// 非空字符串表示已撤回，内容为撤回原因（如 "Had a vulnerability"）。
+type yankedValue struct {
+	yanked bool
+	reason string
+}
+
+// UnmarshalJSON 按 PEP 691 允许的两种形态解析 yanked 字段：布尔取其值，
+// 字符串一律视为已撤回并保留原因；其他类型（含 null）不在规范允许范围内，报错。
+func (y *yankedValue) UnmarshalJSON(b []byte) error {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	switch t := v.(type) {
+	case bool:
+		y.yanked, y.reason = t, ""
+	case string:
+		y.yanked, y.reason = true, t
+	default:
+		return fmt.Errorf("yanked 应为布尔或字符串, 实际为 %T", v)
+	}
+	return nil
+}
+
+// anchorRe 从 PEP 503 HTML 索引中提取文件链接：捕获 a 标签的完整属性区与链接文本。
+// 属性区整体捕获而非只锚定 href，使 data-yanked 等属性与 href 的先后顺序不影响解析。
+var (
+	anchorRe = regexp.MustCompile(`<a\s+([^>]*)>([^<]+)</a>`)
+	hrefRe   = regexp.MustCompile(`href="([^"]*)"`)
+)
 
 // FetchSimple 请求索引上某包的 simple 页面并解析文件列表。
 //
@@ -138,7 +169,13 @@ func FetchSimple(ctx context.Context, client *http.Client, indexURL, name string
 			return nil, fmt.Errorf("解析 %s 的 JSON 失败: %w", pageURL, err)
 		}
 		for _, f := range sj.Files {
-			files = append(files, File{Filename: f.Filename, URL: resolveURL(pageURL, f.URL), SHA256: f.Hashes["sha256"], Yanked: f.Yanked})
+			files = append(files, File{
+				Filename:     f.Filename,
+				URL:          resolveURL(pageURL, f.URL),
+				SHA256:       f.Hashes["sha256"],
+				Yanked:       f.Yanked.yanked,
+				YankedReason: f.Yanked.reason,
+			})
 		}
 	} else {
 		files = parseSimpleHTML(pageURL, body)
@@ -171,22 +208,60 @@ func resolveURL(pageURL, raw string) string {
 
 // parseSimpleHTML 解析 PEP 503 HTML simple 页面。
 //
+//	@param pageURL string simple 页面地址，作为相对链接的基准。
 //	@param body []byte 页面原始内容。
-//	@return []File 提取到的文件列表；链接文本为文件名，sha256 取 href 片段，缺失为空。
+//	@return []File 提取到的文件列表；链接文本为文件名，sha256 取 href 片段，缺失为空；
+//	data-yanked 属性（PEP 592）存在即标记撤回，属性值为撤回原因。
 func parseSimpleHTML(pageURL string, body []byte) []File {
 	var files []File
 	for _, m := range anchorRe.FindAllStringSubmatch(string(body), -1) {
-		href, text := m[1], strings.TrimSpace(m[2])
+		attrs, text := m[1], strings.TrimSpace(m[2])
 		if text == "" {
 			continue
 		}
+		hm := hrefRe.FindStringSubmatch(attrs)
+		if hm == nil {
+			continue
+		}
+		href := hm[1]
 		f := File{Filename: text, URL: resolveURL(pageURL, href)}
 		if i := strings.Index(href, "#sha256="); i >= 0 {
 			f.SHA256 = strings.TrimPrefix(href[i:], "#sha256=")
 		}
+		f.Yanked, f.YankedReason = yankedFromAttrs(attrs)
 		files = append(files, f)
 	}
 	return files
+}
+
+// yankedFromAttrs 从 a 标签属性区提取撤回标记（PEP 592 的 data-yanked 属性）。
+//
+// 属性存在即已撤回，与 href 的先后顺序无关；属性可无值（布尔形式）或以
+// 引号携带原因文本。原因按 HTML 实体解码（源页面中 >、& 等已转义）。
+//
+//	@param attrs string a 标签的完整属性文本。
+//	@return bool 已撤回时为 true。
+//	@return string 撤回原因；属性无值或未撤回时为空串。
+func yankedFromAttrs(attrs string) (bool, string) {
+	i := strings.Index(attrs, "data-yanked")
+	if i < 0 {
+		return false, ""
+	}
+	rest := strings.TrimLeft(attrs[i+len("data-yanked"):], " \t\r\n")
+	if !strings.HasPrefix(rest, "=") {
+		return true, "" // 无值的布尔属性形式：data-yanked
+	}
+	val := strings.TrimLeft(rest[1:], " \t\r\n")
+	if len(val) > 0 && (val[0] == '"' || val[0] == '\'') {
+		if j := strings.IndexByte(val[1:], val[0]); j >= 0 {
+			return true, html.UnescapeString(val[1 : 1+j])
+		}
+		return true, "" // 引号未闭合，视为无值
+	}
+	if j := strings.IndexAny(val, " \t\r\n>"); j >= 0 {
+		val = val[:j]
+	}
+	return true, html.UnescapeString(val)
 }
 
 // DistNameVersion 从 wheel 或 sdist 文件名中提取包名与版本。

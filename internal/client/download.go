@@ -201,21 +201,18 @@ func RunDownloadPypi(opts DownloadPypiOptions) error {
 		if err != nil {
 			return err
 		}
-		var matched []pypi.File
-		for _, f := range files {
-			if f.Yanked || !pypi.MatchesReq(f, req.Name, req.Version) {
-				continue
-			}
-			// wheel 按目标 Python 版本与平台架构过滤；sdist 与平台无关，始终保留
-			if strings.HasSuffix(strings.ToLower(f.Filename), ".whl") {
-				if !pypi.WheelMatchesPython(f.Filename, minors) {
-					continue
+		// PEP 592：有非撤回文件满足锁定版本时必须忽略撤回文件；
+		// 锁定版本（精确 ==）仅有撤回文件匹配时允许使用，但应警告。
+		matched := matchDists(files, req, minors, opts.Platforms, opts.Archs, false)
+		if len(matched) == 0 {
+			matched = matchDists(files, req, minors, opts.Platforms, opts.Archs, true)
+			for _, f := range matched {
+				reason := f.YankedReason
+				if reason == "" {
+					reason = "上游未提供原因"
 				}
-				if !pypi.WheelMatchesPlatformArch(f.Filename, opts.Platforms, opts.Archs) {
-					continue
-				}
+				log.Printf("警告: %s 已被上游撤回（原因: %s），是锁定版本的唯一匹配，按 PEP 592 精确锁定规则下载", f.Filename, reason)
 			}
-			matched = append(matched, f)
 		}
 		if len(matched) == 0 {
 			return fmt.Errorf("%s==%s 在索引 %s 中没有任何兼容文件（--python %v --platform %v --arch %v）",
@@ -230,6 +227,42 @@ func RunDownloadPypi(opts DownloadPypiOptions) error {
 		}
 	}
 	return saveManifest(opts.OutDir, mf)
+}
+
+// matchDists 从 simple 索引文件列表中筛出属于锁定 name==version 且兼容目标
+// Python 版本与平台的发行文件。
+//
+// includeYanked 为 false 时跳过撤回文件（PEP 592：有非撤回文件可用时安装器
+// 必须忽略撤回文件）；为 true 时保留撤回文件，供锁定版本仅有撤回文件时回退。
+// wheel 按目标 Python 版本与平台架构过滤；sdist 与平台无关，始终保留。
+//
+//	@param files []pypi.File simple 索引解析出的全部发行文件。
+//	@param req pypi.Req 锁定的 name==version。
+//	@param minors []int 目标 CPython minor 版本列表。
+//	@param platforms []string --platform 的 os 过滤，空为全部。
+//	@param archs []string --arch 的架构过滤，空为全部。
+//	@param includeYanked bool 是否保留撤回文件。
+//	@return []pypi.File 命中过滤的文件列表；无命中时为 nil。
+func matchDists(files []pypi.File, req pypi.Req, minors []int, platforms, archs []string, includeYanked bool) []pypi.File {
+	var matched []pypi.File
+	for _, f := range files {
+		if !includeYanked && f.Yanked {
+			continue
+		}
+		if !pypi.MatchesReq(f, req.Name, req.Version) {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(f.Filename), ".whl") {
+			if !pypi.WheelMatchesPython(f.Filename, minors) {
+				continue
+			}
+			if !pypi.WheelMatchesPlatformArch(f.Filename, platforms, archs) {
+				continue
+			}
+		}
+		matched = append(matched, f)
+	}
+	return matched
 }
 
 // RunDownloadPython 执行 download python：按元数据筛选并下载 CPython 安装包。

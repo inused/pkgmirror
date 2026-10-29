@@ -5,6 +5,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,20 +112,73 @@ func TestMatchesReq(t *testing.T) {
 }
 
 func TestParseSimpleHTML(t *testing.T) {
+	// data-yanked 故意放在 href 之前，验证属性顺序不影响撤回标记解析（PEP 592）
 	html := `<!DOCTYPE html><html><body>
 <h1>Links for requests</h1>
 <a href="/packages/requests/requests-2.31.0-py3-none-any.whl#sha256=abc123">requests-2.31.0-py3-none-any.whl</a><br/>
 <a href="/packages/requests/requests-2.31.0.tar.gz">requests-2.31.0.tar.gz</a><br/>
+<a data-yanked="Had a vulnerability" href="/packages/requests/requests-2.30.0.tar.gz">requests-2.30.0.tar.gz</a><br/>
+<a data-yanked href="/packages/requests/requests-2.29.0.tar.gz">requests-2.29.0.tar.gz</a><br/>
 </body></html>`
 	files := parseSimpleHTML("https://pypi.org/simple/requests/", []byte(html))
-	if len(files) != 2 {
-		t.Fatalf("提取到 %d 个文件, 期望 2", len(files))
+	if len(files) != 4 {
+		t.Fatalf("提取到 %d 个文件, 期望 4", len(files))
 	}
 	if files[0].Filename != "requests-2.31.0-py3-none-any.whl" || files[0].SHA256 != "abc123" {
 		t.Errorf("第一个文件解析错误: %+v", files[0])
 	}
 	if files[1].SHA256 != "" {
 		t.Errorf("无哈希链接的 sha256 应为空: %+v", files[1])
+	}
+	if files[1].Yanked {
+		t.Errorf("无 data-yanked 的文件不应标记撤回: %+v", files[1])
+	}
+	if !files[2].Yanked || files[2].YankedReason != "Had a vulnerability" {
+		t.Errorf("data-yanked 带原因的解析错误: %+v", files[2])
+	}
+	if !files[3].Yanked || files[3].YankedReason != "" {
+		t.Errorf("data-yanked 无值时应标记撤回且原因为空: %+v", files[3])
+	}
+}
+
+func TestFetchSimpleJSON(t *testing.T) {
+	// 覆盖 PEP 691 yanked 的全部形态：布尔 false、原因字符串、布尔 true、键缺失
+	const body = `{"files":[
+		{"filename":"demo-2.1-py3-none-any.whl","url":"/pkg/demo-2.1-py3-none-any.whl","hashes":{"sha256":"cde"},"yanked":true},
+		{"filename":"demo-2.0-py3-none-any.whl","url":"/pkg/demo-2.0-py3-none-any.whl","hashes":{"sha256":"bcd"},"yanked":"Had a vulnerability"},
+		{"filename":"demo-1.0-py3-none-any.whl","url":"/pkg/demo-1.0-py3-none-any.whl","hashes":{"sha256":"abc"},"yanked":false},
+		{"filename":"demo-0.9.tar.gz","url":"https://files.example/demo-0.9.tar.gz","hashes":{"sha256":"909"}}
+	]}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.pypi.simple.v1+json")
+		w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	files, err := FetchSimple(context.Background(), ts.Client(), ts.URL, "Demo_Pkg")
+	if err != nil {
+		t.Fatalf("FetchSimple 报错: %v", err)
+	}
+	if len(files) != 4 {
+		t.Fatalf("提取到 %d 个文件, 期望 4", len(files))
+	}
+	// FetchSimple 按文件名排序：0.9、1.0、2.0、2.1
+	if files[0].Filename != "demo-0.9.tar.gz" || files[0].Yanked || files[0].SHA256 != "909" {
+		t.Errorf("yanked 键缺失时应视为未撤回: %+v", files[0])
+	}
+	if files[0].URL != "https://files.example/demo-0.9.tar.gz" {
+		t.Errorf("绝对地址应原样保留: %+v", files[0])
+	}
+	if files[1].Yanked {
+		t.Errorf("yanked=false 不应标记撤回: %+v", files[1])
+	}
+	if !files[2].Yanked || files[2].YankedReason != "Had a vulnerability" {
+		t.Errorf("yanked 为原因字符串时应标记撤回并保留原因: %+v", files[2])
+	}
+	if files[2].URL != ts.URL+"/pkg/demo-2.0-py3-none-any.whl" {
+		t.Errorf("相对地址应基于页面地址解析: %+v", files[2])
+	}
+	if !files[3].Yanked || files[3].YankedReason != "" {
+		t.Errorf("yanked=true 应标记撤回且原因为空: %+v", files[3])
 	}
 }
 
