@@ -138,7 +138,8 @@ data/
 - `18` 按 18.0.0 保守校验（如需按 18.17.0 校验，应指定 `--node 18.17`）；`18.20` 与 `18.20.1` 补齐 / 原样；
 - 违规条目跳过下载，扫描结束后汇总报错；
 - range 为空（多数包不声明 engines）或语法无法解析时视为满足（宽松，
-  不因非标语法误杀）；semver range 求值器自实现（node-semver ranges
+  不因非标语法误杀）；engines 非 object 的 registry 历史脏数据（如
+  ansi-html-community@0.0.8 的数组）同样视为未声明；semver range 求值器自实现（node-semver ranges
   子集：比较符、x-range、`~`、`^`、连字符范围、空格 AND、`||` OR、
   预发布段）。
 

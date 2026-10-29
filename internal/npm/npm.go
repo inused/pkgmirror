@@ -204,10 +204,28 @@ type packumentJSON struct {
 			Tarball   string `json:"tarball"`
 			Integrity string `json:"integrity"`
 		} `json:"dist"`
-		Engines struct {
-			Node string `json:"node"`
-		} `json:"engines"`
+		Engines enginesValue `json:"engines"`
 	} `json:"versions"`
+}
+
+// enginesValue 是 packument 的 engines 字段。规范形态为对象（如
+// {"node": ">=18"}），但 registry 存有历史脏数据——engines 整体为数组
+// （如 ansi-html-community@0.0.8 的 ["node >= 0.8.0"]）。非对象形态与
+// npm 客户端同等方式对待：视为未声明约束。
+type enginesValue struct {
+	node string
+}
+
+// UnmarshalJSON 宽松解析 engines：按 {"node": string} 取值，其他形态
+// （数组、字符串、null 或 node 非字符串）静默置零，不报错。
+func (e *enginesValue) UnmarshalJSON(b []byte) error {
+	var obj struct {
+		Node string `json:"node"`
+	}
+	if err := json.Unmarshal(b, &obj); err == nil {
+		e.node = obj.Node
+	}
+	return nil
 }
 
 // PackumentURL 拼接包的 packument 请求地址。
@@ -274,7 +292,7 @@ func TarballInfo(body []byte, version string) (tarballURL, integrity, enginesNod
 	if !ok || v.Dist.Tarball == "" {
 		return "", "", "", fmt.Errorf("packument 不含版本 %s（可能已被撤回）", version)
 	}
-	return v.Dist.Tarball, v.Dist.Integrity, v.Engines.Node, nil
+	return v.Dist.Tarball, v.Dist.Integrity, v.Engines.node, nil
 }
 
 // RewriteTarballs 把 packument 中全部版本的 dist.tarball 重写为镜像地址。

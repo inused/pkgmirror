@@ -165,6 +165,13 @@ func TestTarballInfo(t *testing.T) {
 	if err != nil || engines != ">=18" {
 		t.Errorf("engines 提取错误: %q %v", engines, err)
 	}
+	// registry 历史脏数据：engines 为数组（ansi-html-community@0.0.8 实际形态），
+	// 应视为未声明约束而非解析失败
+	dirtyEngines := `{"versions":{"0.0.8":{"dist":{"tarball":"https://r/x-0.0.8.tgz"},"engines":["node >= 0.8.0"]}}}`
+	url, _, engines, err = TarballInfo([]byte(dirtyEngines), "0.0.8")
+	if err != nil || engines != "" || url != "https://r/x-0.0.8.tgz" {
+		t.Errorf("数组 engines 应视为未声明: %q %q %v", url, engines, err)
+	}
 }
 
 func TestRewriteTarballs(t *testing.T) {
